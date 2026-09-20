@@ -1,10 +1,139 @@
 package com.multex.browser
 
+import android.content.Context
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import java.net.URI
 import java.net.URLEncoder
+import java.util.Locale
+
+/* ---------- Enums shared with the web build (lib/browser-data.ts) ---------- */
+
+enum class Lang(val id: String, val label: String) {
+    EN("en", "English"),
+    ID("id", "Indonesia");
+
+    companion object {
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: EN
+    }
+}
+
+/** Pick the string for the active language. Keeps call sites short: tx(lang, "Hide", "Sembunyikan"). */
+fun tx(lang: Lang, en: String, id: String): String = if (lang == Lang.ID) id else en
+
+enum class ThemeId(val id: String, val label: String) {
+    MIDNIGHT("midnight", "Midnight"),
+    SAKURA("sakura", "Sakura");
+
+    companion object {
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: MIDNIGHT
+    }
+}
+
+enum class CompanionSize(val id: String, val label: String, val height: Dp) {
+    SM("sm", "Small", 104.dp),
+    MD("md", "Medium", 136.dp),
+    LG("lg", "Large", 172.dp);
+
+    companion object {
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: MD
+    }
+}
+
+enum class PetId(val id: String, val label: String, val res: Int?) {
+    NONE("none", "None", null),
+    BUNNY("bunny", "Bunny", R.drawable.bunny),
+    RABBIT("rabbit", "Rabbit", R.drawable.animal_rabbit),
+    CAT("cat", "Cat", R.drawable.animal_cat),
+    FOX("fox", "Fox", R.drawable.animal_fox),
+    BEAR("bear", "Bear", R.drawable.animal_bear),
+    PANDA("panda", "Panda", R.drawable.animal_panda),
+    FROG("frog", "Frog", R.drawable.animal_frog);
+
+    companion object {
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: NONE
+    }
+}
+
+data class SearchEngine(val id: String, val label: String, val short: String, val host: String, val queryUrl: String)
+
+val ENGINES = listOf(
+    SearchEngine("google", "Google", "G", "google.com", "https://www.google.com/search?q="),
+    SearchEngine("duckduckgo", "DuckDuckGo", "DDG", "duckduckgo.com", "https://duckduckgo.com/?q="),
+    SearchEngine("brave", "Brave Search", "B", "search.brave.com", "https://search.brave.com/search?q="),
+)
+
+fun engineFrom(id: String?) = ENGINES.firstOrNull { it.id == id } ?: ENGINES.first()
+
+enum class Overlay { NONE, TABS, SESSIONS, SETTINGS, MENU }
+
+/* ---------- Settings ---------- */
+
+data class Settings(
+    val companionEnabled: Boolean = true,
+    val companionSize: CompanionSize = CompanionSize.MD,
+    val pet: PetId = PetId.NONE,
+    val chatty: Boolean = true,
+    val theme: ThemeId = ThemeId.MIDNIGHT,
+    val searchEngine: SearchEngine = ENGINES.first(),
+    val language: Lang = Lang.EN,
+    val blockTrackers: Boolean = true,
+    val httpsOnly: Boolean = true,
+    /** Google AI Studio key. When set, Denia answers free-form questions through Gemini. */
+    val geminiKey: String = "",
+)
+
+/** Persists settings (including the Gemini key) in app-private SharedPreferences. */
+class SettingsStore(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences("multex.settings", Context.MODE_PRIVATE)
+
+    fun load(): Settings = Settings(
+        companionEnabled = prefs.getBoolean("companionEnabled", true),
+        companionSize = CompanionSize.from(prefs.getString("companionSize", null)),
+        pet = PetId.from(prefs.getString("pet", null)),
+        chatty = prefs.getBoolean("chatty", true),
+        theme = ThemeId.from(prefs.getString("theme", null)),
+        searchEngine = engineFrom(prefs.getString("searchEngine", null)),
+        language = Lang.from(prefs.getString("language", null)),
+        blockTrackers = prefs.getBoolean("blockTrackers", true),
+        httpsOnly = prefs.getBoolean("httpsOnly", true),
+        geminiKey = prefs.getString("geminiKey", "") ?: "",
+    )
+
+    fun save(s: Settings) {
+        prefs.edit()
+            .putBoolean("companionEnabled", s.companionEnabled)
+            .putString("companionSize", s.companionSize.id)
+            .putString("pet", s.pet.id)
+            .putBoolean("chatty", s.chatty)
+            .putString("theme", s.theme.id)
+            .putString("searchEngine", s.searchEngine.id)
+            .putString("language", s.language.id)
+            .putBoolean("blockTrackers", s.blockTrackers)
+            .putBoolean("httpsOnly", s.httpsOnly)
+            .putString("geminiKey", s.geminiKey)
+            .apply()
+    }
+}
+
+/* ---------- Tabs & sessions ---------- */
+
+enum class TabKind { HOME, PAGE }
+
+data class Tab(
+    val id: String,
+    val kind: TabKind,
+    val title: String,
+    val host: String,
+    val url: String,
+    val tint: Color,
+    val progress: Int = 100,
+    val canGoBack: Boolean = false,
+    val blocked: Int = 0,
+)
+
+data class Session(val id: String, val name: String, val savedAt: String, val tabs: List<Tab>)
 
 data class Shortcut(val title: String, val host: String, val tint: Color)
 
@@ -19,42 +148,73 @@ val SHORTCUTS = listOf(
     Shortcut("Discord", "discord.com", Color(0xFFA3AEFF)),
 )
 
-data class Pet(val id: String, val label: String, val res: Int?)
+private val SITE_INFO = SHORTCUTS.associateBy { it.host }
 
-val PETS = listOf(
-    Pet("none", "None", null),
-    Pet("bunny", "Bunny", R.drawable.bunny),
-    Pet("rabbit", "Rabbit", R.drawable.animal_rabbit),
-    Pet("cat", "Cat", R.drawable.animal_cat),
-    Pet("fox", "Fox", R.drawable.animal_fox),
-    Pet("bear", "Bear", R.drawable.animal_bear),
-    Pet("panda", "Panda", R.drawable.animal_panda),
-    Pet("frog", "Frog", R.drawable.animal_frog),
+private val TINTS = listOf(
+    Color(0xFFF79AC8), Color(0xFFB9A9FF), Color(0xFF86A6FF), Color(0xFF7FE0C9), Color(0xFFFFC178),
 )
 
-data class CompanionSize(val id: String, val label: String, val height: Dp)
+val HOME_TINT = Color(0xFFB9A9FF)
 
-val SIZES = listOf(
-    CompanionSize("sm", "Small", 104.dp),
-    CompanionSize("md", "Medium", 136.dp),
-    CompanionSize("lg", "Large", 172.dp),
-)
+private var seq = 0L
+fun uid(): String = "t-${System.currentTimeMillis().toString(36)}-${(seq++).toString(36)}"
 
-data class SearchEngine(val id: String, val label: String, val queryUrl: String)
+fun normalizeHost(input: String): String =
+    input.trim()
+        .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^www\\.", RegexOption.IGNORE_CASE), "")
+        .split('/', '?', '#')[0]
+        .lowercase()
 
-val ENGINES = listOf(
-    SearchEngine("google", "Google", "https://www.google.com/search?q="),
-    SearchEngine("duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q="),
-    SearchEngine("brave", "Brave Search", "https://search.brave.com/search?q="),
-)
+fun hostOf(url: String): String =
+    runCatching { URI(url).host?.removePrefix("www.") }.getOrNull() ?: normalizeHost(url)
 
-fun resolveInput(input: String, engine: SearchEngine): String {
+fun tintFor(host: String): Color {
+    SITE_INFO[host]?.let { return it.tint }
+    val hash = host.sumOf { it.code }
+    return TINTS[hash % TINTS.size]
+}
+
+fun titleFor(host: String): String =
+    SITE_INFO[host]?.title ?: host.substringBefore('.').replaceFirstChar { it.titlecase(Locale.ROOT) }
+
+fun makeTab(url: String, title: String? = null): Tab {
+    val host = hostOf(url)
+    return Tab(
+        id = uid(),
+        kind = TabKind.PAGE,
+        title = title ?: titleFor(host),
+        host = host,
+        url = url,
+        tint = tintFor(host),
+        progress = 0,
+    )
+}
+
+fun makeHomeTab(): Tab = Tab(uid(), TabKind.HOME, "New tab", "", "", HOME_TINT)
+
+/** Turns typed text into a URL: full URLs pass through, host-like input gets https://, everything else is a search. */
+fun resolveInput(input: String, engine: SearchEngine, httpsOnly: Boolean = true): String {
     val q = input.trim()
     if (q.isEmpty()) return ""
+    if (q.startsWith("http://") && httpsOnly) return "https://" + q.removePrefix("http://")
     if (q.startsWith("http://") || q.startsWith("https://")) return q
-    val looksLikeHost = !q.contains(' ') && q.contains('.')
+    val looksLikeHost = !q.contains(' ') && Regex("^[\\w-]+(\\.[\\w-]+)+").containsMatchIn(q)
     return if (looksLikeHost) "https://$q" else engine.queryUrl + URLEncoder.encode(q, "UTF-8")
 }
 
-fun hostOf(url: String): String =
-    runCatching { URI(url).host?.removePrefix("www.") }.getOrNull() ?: url
+/** Hosts blocked when "Block trackers" is on. The address pill shield shows how many were stopped. */
+val TRACKER_HOSTS = listOf(
+    "google-analytics.com", "googletagmanager.com", "doubleclick.net", "googlesyndication.com",
+    "googleadservices.com", "adservice.google.com", "facebook.net", "connect.facebook.net",
+    "scorecardresearch.com", "quantserve.com", "hotjar.com", "mixpanel.com", "segment.io",
+    "segment.com", "amplitude.com", "criteo.com", "criteo.net", "taboola.com", "outbrain.com",
+    "adnxs.com", "rubiconproject.com", "pubmatic.com", "openx.net", "moatads.com", "chartbeat.com",
+    "newrelic.com", "nr-data.net", "bugsnag.com", "sentry.io", "branch.io", "adjust.com", "appsflyer.com",
+)
+
+fun isTracker(host: String?): Boolean {
+    if (host.isNullOrEmpty()) return false
+    val h = host.lowercase()
+    return TRACKER_HOSTS.any { h == it || h.endsWith(".$it") }
+}
