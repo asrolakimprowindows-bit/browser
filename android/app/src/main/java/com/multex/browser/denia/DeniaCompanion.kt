@@ -4,7 +4,7 @@ package com.multex.browser.denia
  * Drop-in Jetpack Compose port of the web companion in components/denia/denia-companion.tsx.
  *
  * Setup:
- *  1. Copy public/denia/*.png into app/src/main/res/drawable/ (names already match R.drawable.*).
+ *  1. Copy the PNGs from public/denia into app/src/main/res/drawable (names already match R.drawable).
  *  2. Place <DeniaCompanion/> as the LAST child of the Box that wraps your WebView + toolbar so it
  *     draws above everything.
  *  3. Feed `cue` from your browser state (e.g. "Opening pixiv.net~") and Denia will speak it.
