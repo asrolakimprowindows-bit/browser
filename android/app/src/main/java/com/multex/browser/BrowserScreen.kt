@@ -7,17 +7,14 @@ package com.multex.browser
  *   content + dock  <  sheets (z-50)  <  Denia (z-60)  <  chat bar (z-65)  <  fullscreen orb
  * Page content starts strictly BELOW the address bar (no more bleed-through above it);
  * the bottom dock still floats over the page like mobile Safari.
- * In fullscreen mode both bars shrink/collapse into a single draggable orb (Immersive.kt).
+ *
+ * Fullscreen (immersive) runs through the FsState machine (see Immersive.kt):
+ * the real chrome is hidden the moment ENTERING starts while exact ghost copies fly
+ * into the orb; the Android system bars are hidden only AFTER the absorption ends,
+ * and restored BEFORE the release animation plays on the way out.
  */
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -29,13 +26,18 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.multex.browser.denia.DeniaChatBar
 import com.multex.browser.denia.DeniaCompanion
 
@@ -56,15 +58,40 @@ fun BrowserScreen(model: BrowserModel) {
     val lang = settings.language
     val active = model.active
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val fs = model.fsState
     // Fullscreen only applies to real pages; the home screen keeps its normal chrome.
-    val immersiveActive = model.immersiveMode && active.kind == TabKind.PAGE
+    val fullscreen = fs != FsState.NORMAL && active.kind == TabKind.PAGE
+    // The real chrome only exists in NORMAL and EXITING (where it is the animation target).
+    val chromeVisible = fs == FsState.NORMAL || fs == FsState.EXITING
+
+    // ---- System bars: hidden for the whole fullscreen session, restored on the way out ----
+    val view = LocalView.current
+    DisposableEffect(fs) {
+        val window = (view.context as? android.app.Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (controller != null) {
+            when (fs) {
+                // Wait for the absorption to finish before hiding: no mid-animation pop.
+                FsState.ORB, FsState.MENU_OPEN -> {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                }
+                // Show the bars first, THEN the chrome flies back out of the orb.
+                FsState.EXITING -> controller.show(WindowInsetsCompat.Type.systemBars())
+                else -> Unit
+            }
+        }
+        onDispose { }
+    }
 
     // Last registered = highest priority.
-    BackHandler(enabled = active.kind == TabKind.PAGE) { model.back() }
+    BackHandler(enabled = active.kind == TabKind.PAGE && fs == FsState.NORMAL) { model.back() }
+    BackHandler(enabled = fs == FsState.ORB || fs == FsState.MENU_OPEN) { model.exitImmersive() }
     BackHandler(enabled = model.shortcutEditMode && active.kind == TabKind.HOME) { model.shortcutEditMode = false }
     BackHandler(enabled = model.directMode) { model.directMode = false }
     BackHandler(enabled = model.overlay != Overlay.NONE) { model.overlay = Overlay.NONE }
-    BackHandler(enabled = model.chatOpen) { model.chatOpen = false }
+    BackHandler(enabled = model.chatOpen) { model.closeChatAnimated() }
 
     Box(Modifier.fillMaxSize().screenBackground()) {
 
@@ -72,14 +99,9 @@ fun BrowserScreen(model: BrowserModel) {
         Box(Modifier.fillMaxSize().imePadding()) {
             Column(Modifier.fillMaxSize()) {
                 // The address bar owns the top of the layout, so page content can no longer
-                // show through or above it. Entering fullscreen makes it shrink away (absorbed).
-                AnimatedVisibility(
-                    visible = active.kind == TabKind.PAGE && !immersiveActive,
-                    enter = fadeIn(tween(180)) + slideInVertically(tween(260)) { -it / 2 },
-                    exit = fadeOut(tween(210)) + scaleOut(tween(240), targetScale = 0.4f) +
-                        slideOutVertically(tween(260)) { it / 2 },
-                    modifier = Modifier.statusBarsPadding(),
-                ) {
+                // show through or above it. It vanishes the instant ENTERING begins; the
+                // ghost copy inside ImmersiveOrb carries the absorption animation instead.
+                if (active.kind == TabKind.PAGE && chromeVisible) {
                     AddressBar(
                         tab = active,
                         blockTrackers = settings.blockTrackers,
@@ -87,6 +109,7 @@ fun BrowserScreen(model: BrowserModel) {
                         onHome = model::goHome,
                         onSubmit = model::navigate,
                         onReloadOrStop = model::reloadOrStop,
+                        modifier = Modifier.statusBarsPadding(),
                     )
                 }
 
@@ -121,14 +144,8 @@ fun BrowserScreen(model: BrowserModel) {
                 }
             }
 
-            // Bottom dock: floats over the page, and shrinks away in fullscreen mode.
-            AnimatedVisibility(
-                visible = !imeVisible && !immersiveActive,
-                enter = fadeIn(tween(180)) + slideInVertically(tween(280)) { it / 2 },
-                exit = fadeOut(tween(210)) + scaleOut(tween(240), targetScale = 0.4f) +
-                    slideOutVertically(tween(260)) { it / 2 },
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
-            ) {
+            // Bottom dock: floats over the page, absorbed into the orb in fullscreen mode.
+            if (!imeVisible && chromeVisible) {
                 BottomDock(
                     lang = lang,
                     canBack = active.kind == TabKind.PAGE,
@@ -139,6 +156,7 @@ fun BrowserScreen(model: BrowserModel) {
                     onNewTab = model::newTab,
                     onTabs = { model.openOverlay(Overlay.TABS) },
                     onMenu = { model.openOverlay(Overlay.MENU) },
+                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
                 )
             }
         }
@@ -206,7 +224,7 @@ fun BrowserScreen(model: BrowserModel) {
             Overlay.MENU -> MenuOverlay(
                 lang = lang,
                 companionEnabled = settings.companionEnabled,
-                immersive = model.immersiveMode,
+                immersive = fs != FsState.NORMAL,
                 onChat = model::openChat,
                 onSessions = { model.openOverlay(Overlay.SESSIONS) },
                 onSaveSession = model::saveSession,
@@ -222,6 +240,9 @@ fun BrowserScreen(model: BrowserModel) {
         }
 
         // ---- Denia + chat: above the sheets, like z-60 / z-65 in the web build ----
+        // systemBarsPadding keeps Denia and her chat clear of the status bar and the
+        // navigation bar (and of the floating bottom dock), imePadding lifts the input
+        // above the keyboard whenever the user explicitly focuses it.
         Box(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
             if (settings.companionEnabled) {
                 DeniaCompanion(
@@ -233,6 +254,7 @@ fun BrowserScreen(model: BrowserModel) {
                     directMode = model.directMode,
                     onDirectModeChange = { model.directMode = it },
                     lang = lang,
+                    onAnchorChange = { model.deniaAnchor = it },
                     onTap = model::openChat,
                 )
             }
@@ -241,34 +263,45 @@ fun BrowserScreen(model: BrowserModel) {
                     lang = lang,
                     engine = settings.searchEngine,
                     aiProvider = settings.aiProvider,
-                    geminiKey = settings.geminiKey,
+                    openRouterKey = settings.openRouterKey,
+                    openRouterModel = settings.openRouterModel,
                     openAiBaseUrl = settings.openAiBaseUrl,
                     openAiApiKey = settings.openAiApiKey,
                     openAiModel = settings.openAiModel,
                     context = model.chatContext,
+                    anchor = model.deniaAnchor,
+                    closeSignal = model.chatCloseSignal,
                     onReply = model::handleDeniaReply,
                     onOpenUrl = { target -> model.openInNewTab(target.url, target.label) },
                     onClose = { model.chatOpen = false },
                     modifier = Modifier.align(Alignment.BottomCenter),
-                    bottomPadding = if (imeVisible) 8.dp else 64.dp,
+                    bottomPadding = if (imeVisible) 8.dp else 96.dp,
                 )
             }
         }
 
         // ---- fullscreen orb: floats above everything ----
-        if (immersiveActive) {
-            Box(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+        if (fullscreen) {
+            Box(Modifier.fillMaxSize().imePadding()) {
                 ImmersiveOrb(
                     lang = lang,
                     tab = active,
+                    blockTrackers = settings.blockTrackers,
                     canForward = active.canGoForward,
                     tabCount = model.tabs.size,
+                    fs = fs,
+                    detail = settings.orbDetail,
+                    onAbsorbed = { model.applyFsState(FsState.ORB) },
+                    onRestored = { model.applyFsState(FsState.NORMAL) },
+                    onMenuOpenChange = { open ->
+                        if (open) model.applyFsState(FsState.MENU_OPEN) else model.applyFsState(FsState.ORB)
+                    },
                     onBack = model::back,
                     onForward = model::forward,
                     onSubmit = model::navigate,
                     onReloadOrStop = model::reloadOrStop,
                     onTabs = { model.openOverlay(Overlay.TABS) },
-                    onExit = { model.immersiveMode = false },
+                    onExit = model::exitImmersive,
                 )
             }
         }

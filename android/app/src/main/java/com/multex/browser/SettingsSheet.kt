@@ -1,6 +1,6 @@
 package com.multex.browser
 
-/* Port of SettingsOverlay / GeminiKeyField / CreditCard from components/browser/overlays.tsx. */
+/* Port of SettingsOverlay / CreditCard from components/browser/overlays.tsx (Gemini key field replaced by OpenRouter). */
 
 import android.content.Intent
 import android.net.Uri
@@ -61,7 +61,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private const val GEMINI_KEY_URL = "https://aistudio.google.com/app/apikey"
+
 
 @Composable
 fun BoxScope.SettingsOverlay(
@@ -151,19 +151,25 @@ fun BoxScope.SettingsOverlay(
             Segmented(
                 value = settings.aiProvider,
                 options = listOf(
-                    AiProvider.GEMINI to "Gemini",
+                    AiProvider.OPENROUTER to "OpenRouter",
                     AiProvider.OPENAI_COMPATIBLE to "OpenAI compat.",
                 ),
                 onChange = { provider -> onChange { it.copy(aiProvider = provider) } },
             )
         }
         when (settings.aiProvider) {
-            AiProvider.GEMINI -> SettingRow(
-                "Gemini API key",
-                tx(lang, "Lets Denia answer free-form questions. Stored only on this device.", "Biar Denia bisa jawab pertanyaan bebas. Disimpan cuma di HP ini."),
+            AiProvider.OPENROUTER -> SettingRow(
+                "OpenRouter",
+                tx(lang, "Lets Denia answer free-form questions. The key is stored only on this device.", "Biar Denia bisa jawab pertanyaan bebas. Key disimpan cuma di HP ini."),
                 stacked = true,
             ) {
-                GeminiKeyField(settings.geminiKey, lang) { v -> onChange { it.copy(geminiKey = v) } }
+                OpenRouterFields(
+                    apiKey = settings.openRouterKey,
+                    model = settings.openRouterModel,
+                    lang = lang,
+                    onApiKeyChange = { v -> onChange { it.copy(openRouterKey = v) } },
+                    onModelChange = { v -> onChange { it.copy(openRouterModel = v) } },
+                )
             }
             AiProvider.OPENAI_COMPATIBLE -> SettingRow(
                 tx(lang, "OpenAI-compatible API", "API kompatibel OpenAI"),
@@ -228,6 +234,17 @@ fun BoxScope.SettingsOverlay(
         SectionTitle(tx(lang, "Browser", "Peramban"))
         SettingRow(tx(lang, "Desktop site", "Situs desktop"), tx(lang, "Ask sites for their desktop version", "Minta versi desktop dari situs")) {
             GlassSwitch(settings.desktopSite, { v -> onChange { it.copy(desktopSite = v) } }, "Desktop site")
+        }
+        SettingRow(
+            tx(lang, "Fullscreen orb detail", "Detail orb layar penuh"),
+            tx(lang, "Black-hole & laser animation quality", "Kualitas animasi black-hole & laser"),
+            stacked = true,
+        ) {
+            Segmented(
+                value = settings.orbDetail,
+                options = OrbDetail.entries.map { it to it.label },
+                onChange = { v -> onChange { it.copy(orbDetail = v) } },
+            )
         }
         SettingRow(
             tx(lang, "Session cookies", "Cookie sesi"),
@@ -396,75 +413,43 @@ private fun ApiSettingField(
 }
 
 @Composable
-private fun GeminiKeyField(value: String, lang: Lang, onChange: (String) -> Unit) {
+private fun OpenRouterFields(
+    apiKey: String,
+    model: String,
+    lang: Lang,
+    onApiKeyChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+) {
     val context = LocalContext.current
-    var draft by remember(value) { mutableStateOf(value) }
-    var revealed by remember { mutableStateOf(false) }
-    val dirty = draft.trim() != value
-    val connected = value.isNotEmpty()
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .glass(16.dp)
-                .padding(start = 12.dp, top = 6.dp, end = 6.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                Icons.Filled.VpnKey,
-                contentDescription = null,
-                tint = if (connected) Palette.Pink else Palette.InkMuted,
-                modifier = Modifier.size(16.dp),
-            )
-            Box(Modifier.weight(1f)) {
-                if (draft.isEmpty()) Text("AIza...", color = Palette.InkMuted, fontSize = 13.sp)
-                BasicTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    singleLine = true,
-                    textStyle = TextStyle(color = Palette.Ink, fontSize = 13.sp, fontFamily = FontFamily.Monospace),
-                    cursorBrush = SolidColor(Palette.Pink),
-                    visualTransformation = if (revealed) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onChange(draft.trim()) }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { if (!it.isFocused && draft.trim() != value) onChange(draft.trim()) },
-                )
-            }
-            RoundIconButton(
-                if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                contentDescription = if (revealed) tx(lang, "Hide key", "Sembunyikan key") else tx(lang, "Show key", "Tampilkan key"),
-                onClick = { revealed = !revealed },
-            )
-            if (draft.isNotEmpty() || connected) {
-                RoundIconButton(
-                    Icons.Filled.Close,
-                    contentDescription = tx(lang, "Clear key", "Hapus key"),
-                    onClick = {
-                        draft = ""
-                        onChange("")
-                    },
-                )
-            }
-        }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ApiSettingField(
+            label = "OpenRouter API key",
+            value = apiKey,
+            placeholder = "sk-or-...",
+            lang = lang,
+            secret = true,
+            keyboardType = KeyboardType.Password,
+            onChange = onApiKeyChange,
+        )
+        ApiSettingField(
+            label = tx(lang, "Model", "Model"),
+            value = model,
+            placeholder = OPENROUTER_DEFAULT_MODEL,
+            lang = lang,
+            onChange = onModelChange,
+        )
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier
                         .size(6.dp)
-                        .background(if (connected) Palette.Pink else Palette.Ink.copy(alpha = 0.3f), CircleShape),
+                        .background(if (apiKey.isNotBlank()) Palette.Pink else Palette.Ink.copy(alpha = 0.3f), CircleShape),
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    when {
-                        dirty -> tx(lang, "Press Done to save", "Tekan Selesai untuk simpan")
-                        connected -> tx(lang, "Gemini connected", "Gemini terhubung")
-                        else -> tx(lang, "Offline brain only", "Otak offline saja")
-                    },
-                    color = if (connected) Palette.Pink else Palette.InkMuted,
+                    if (apiKey.isNotBlank()) tx(lang, "OpenRouter connected", "OpenRouter terhubung")
+                    else tx(lang, "Offline brain only", "Otak offline saja"),
+                    color = if (apiKey.isNotBlank()) Palette.Pink else Palette.InkMuted,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -472,7 +457,7 @@ private fun GeminiKeyField(value: String, lang: Lang, onChange: (String) -> Unit
             Row(
                 Modifier.press {
                     try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GEMINI_KEY_URL)))
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(OPENROUTER_KEY_URL)))
                     } catch (e: Exception) {
                         // no browser to hand the link to
                     }
@@ -480,10 +465,20 @@ private fun GeminiKeyField(value: String, lang: Lang, onChange: (String) -> Unit
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(tx(lang, "Get a free key", "Ambil key gratis"), color = Palette.InkMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(tx(lang, "Get a key", "Ambil key"), color = Palette.InkMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, tint = Palette.InkMuted, modifier = Modifier.size(12.dp))
             }
         }
+        Text(
+            tx(
+                lang,
+                "Model ids come from openrouter.ai/models. Leave the model empty to use the default.",
+                "ID model ada di openrouter.ai/models. Kosongkan model buat pakai bawaan.",
+            ),
+            color = Palette.InkMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+        )
     }
 }
 

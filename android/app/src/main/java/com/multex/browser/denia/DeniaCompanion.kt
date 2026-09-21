@@ -4,9 +4,14 @@ package com.multex.browser.denia
  * Jetpack Compose port of components/denia/denia-companion.tsx.
  *
  * Interactions (same as the web preview):
- *  - tap         she says something, and the chat bar opens
+ *  - tap         she says something, squashes cutely, and the chat bar opens from her position
  *  - drag        pick her up and drop her anywhere
  *  - double-tap  direct mode: tap any spot and she walks there
+ *
+ * The chat opening animation is a two-part sequence:
+ *   1. Denia herself does a quick squash-and-stretch (scaleY down, scaleX up) + tiny bounce.
+ *   2. DeniaChatBar expands with a spring, pivoting at the coordinates Denia reports through
+ *      [onAnchorChange], so the panel visibly grows out of the chibi.
  */
 
 import androidx.compose.animation.AnimatedVisibility
@@ -17,6 +22,7 @@ import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -63,6 +69,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -169,11 +177,14 @@ fun DeniaCompanion(
     directMode: Boolean,
     onDirectModeChange: (Boolean) -> Unit,
     lang: Lang = Lang.EN,
+    /** Reports Denia's current center in root-window pixels; used to pivot the chat panel. */
+    onAnchorChange: (Offset) -> Unit = {},
     onTap: () -> Unit = {},
 ) {
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnDirect by rememberUpdatedState(onDirectModeChange)
     val currentDirectMode by rememberUpdatedState(directMode)
+    val currentOnAnchor by rememberUpdatedState(onAnchorChange)
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -202,6 +213,13 @@ fun DeniaCompanion(
         var marker by remember { mutableStateOf<Marker?>(null) }
         var markerSeq by remember { mutableIntStateOf(0) }
 
+        // ---- Tap-squash: a quick chibi squash-and-stretch fired before the chat opens ----
+        // squash = 1 means normal; 0.72 squashed; 1.12 stretched.
+        val squash = remember { Animatable(1f) }
+        val stretch = remember { Animatable(1f) }
+        // A tiny ring that bursts from her head when tapped (cute particle-ring accent).
+        val tapRing = remember { Animatable(1f) }
+
         fun clamp(p: Offset) = Offset(p.x.coerceIn(0f, maxX), p.y.coerceIn(topPx, maxY))
 
         fun say(line: Line, ms: Long = 3200) {
@@ -217,6 +235,27 @@ fun DeniaCompanion(
                 delay(18_000)
                 pose = Pose.SIT
                 if (chatty) say(Line(tx(lang, "Zzz... just resting my eyes.", "Zzz... istirahat mata dulu."), Mood.NEUTRAL), 2600)
+            }
+        }
+
+        /** Cute squash -> stretch -> settle, then a small pink ring burst. Plays before onTap. */
+        fun squashThen(action: () -> Unit) {
+            scope.launch {
+                tapRing.snapTo(0f)
+                launch { tapRing.animateTo(1f, tween(520, easing = FastOutSlowInEasing)) }
+                launch {
+                    squash.animateTo(0.72f, tween(110, easing = FastOutSlowInEasing))
+                    squash.animateTo(1.12f, tween(140))
+                    squash.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 500f))
+                }
+                launch {
+                    stretch.animateTo(1.22f, tween(110, easing = FastOutSlowInEasing))
+                    stretch.animateTo(0.94f, tween(140))
+                    stretch.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 500f))
+                }
+                // Small delay so the squash reads before the panel starts growing out of her.
+                delay(120)
+                action()
             }
         }
 
@@ -246,6 +285,11 @@ fun DeniaCompanion(
             poke()
             delay(1200)
             if (pose == Pose.BACK) pose = Pose.FRONT
+        }
+
+        // Continuously report her center so the chat panel can pivot from her position.
+        LaunchedEffect(offset.value.x, offset.value.y, maxX, maxY) {
+            currentOnAnchor(Offset(offset.value.x + wPx / 2f, offset.value.y + hPx * 0.55f))
         }
 
         if (directMode) {
@@ -348,12 +392,17 @@ fun DeniaCompanion(
             Modifier
                 .offset { IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt()) }
                 .size(with(density) { wPx.toDp() }, height)
+                .onGloballyPositioned {
+                    // Root-window anchor (more accurate for cross-container pivots).
+                    val c = it.boundsInRoot().center
+                    currentOnAnchor(Offset(c.x, c.y))
+                }
                 .pointerInput(lang, chatty) {
                     detectTapGestures(
                         onTap = {
                             say(tapLines(lang).random())
                             poke()
-                            currentOnTap()
+                            squashThen { currentOnTap() }
                         },
                         onDoubleTap = {
                             val next = !currentDirectMode
@@ -419,8 +468,14 @@ fun DeniaCompanion(
                 Modifier
                     .fillMaxSize()
                     .offset { IntOffset(0, if (pose == Pose.SIT || dragging) 0 else floatY.dp.roundToPx()) }
-                    .scale(if (dragging) 1.06f else 1f)
-                    .graphicsLayer { rotationZ = if (dragging) -4f else if (walking) sway else 0f },
+                    .graphicsLayer {
+                        // squash = vertical squash (scaleY); stretch = horizontal stretch (scaleX).
+                        val sy = if (dragging) 1.06f else squash.value
+                        val sx = if (dragging) 1.06f else stretch.value
+                        scaleX = sx
+                        scaleY = sy
+                        rotationZ = if (dragging) -4f else if (walking) sway else 0f
+                    },
             ) {
                 petRes?.let {
                     Image(
@@ -441,6 +496,28 @@ fun DeniaCompanion(
                         .align(Alignment.BottomCenter)
                         .height(height)
                         .graphicsLayer { scaleX = if (pose == Pose.SIDE && facingRight) -1f else 1f },
+                )
+            }
+
+            // Pink ring burst on tap — expands and fades from her position.
+            if (tapRing.value < 1f) {
+                val ringPx = with(density) { 110.dp.toPx() }
+                Box(
+                    Modifier
+                        .offset {
+                            IntOffset(
+                                ((wPx - ringPx) / 2f).roundToInt(),
+                                ((hPx - ringPx) / 2f).roundToInt(),
+                            )
+                        }
+                        .size(110.dp)
+                        .graphicsLayer {
+                            val s = 0.25f + 1.1f * tapRing.value
+                            scaleX = s
+                            scaleY = s
+                            alpha = (1f - tapRing.value) * 0.85f
+                        }
+                        .border(3.dp, Palette.Pink, CircleShape),
                 )
             }
         }

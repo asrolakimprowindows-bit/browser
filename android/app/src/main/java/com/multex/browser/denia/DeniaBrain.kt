@@ -3,12 +3,20 @@ package com.multex.browser.denia
 import com.multex.browser.Lang
 import com.multex.browser.SearchEngine
 import com.multex.browser.tx
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 
 /*
  * Denia's offline brain: bilingual strings, local command matching, and the "which site is X?"
  * lookup. Everything here runs on-device with no network or API key. Free-form questions go to
- * Gemini (see GeminiClient) when the user has added a key in Settings.
+ * OpenRouter (see OpenRouterClient) when the user has added a key in Settings.
+ *
+ * NEW: PendingActionType/ConversationContext + confirmation detection so that when Denia asks
+ * "want me to search / open in new tab?", the user's short "yes / buka / iya" answer executes
+ * the stored pending action instead of being sent as a raw search query.
  */
 
 /** Same action list as lib/denia-commands.ts. RELOAD and GO_BACK are Android-only, local commands. */
@@ -30,7 +38,7 @@ enum class DeniaAction(val wire: String) {
     GO_BACK("go_back");
 
     companion object {
-        /** Actions Gemini is allowed to pick (identical to DENIA_ACTIONS on the web). */
+        /** Actions the AI provider is allowed to pick (identical to DENIA_ACTIONS on the web). */
         val FOR_AI = listOf(
             NONE, HIDE_DENIA, SHOW_DENIA, NEW_TAB, OPEN_TABS, OPEN_SETTINGS, OPEN_SESSIONS,
             SAVE_SESSION, DIRECT_MODE, THEME_SAKURA, THEME_MIDNIGHT, GO_HOME, OPEN_URL,
@@ -40,8 +48,24 @@ enum class DeniaAction(val wire: String) {
     }
 }
 
+/** The kind of pending action Denia is holding while she waits for the user's yes/no. */
+enum class PendingActionType {
+    /** Denia already knows the URL (site was in her notes). Just open it. */
+    OPEN_URL,
+    /** Denia does NOT know the URL yet: on confirm, search the web for the official site,
+     *  pick the top real result, and open it in a new tab. */
+    SEARCH_AND_OPEN_OFFICIAL,
+}
+
 /** A URL Denia wants to open, but only after the user confirms with Yes. */
-data class PendingOpen(val url: String, val label: String)
+data class PendingOpen(
+    /** For OPEN_URL: the concrete URL to open. For SEARCH_AND_OPEN_OFFICIAL: fallback URL (search page). */
+    val url: String,
+    val label: String,
+    val type: PendingActionType = PendingActionType.OPEN_URL,
+    /** The plain-language target ("NVIDIA", "Apple official website"). Used for the web search. */
+    val target: String = label,
+)
 
 data class DeniaReply(
     val text: String,
@@ -181,15 +205,18 @@ private val SITES: List<Pair<List<String>, Pair<String, String>>> = listOf(
     listOf("honkai", "star rail") to ("Honkai: Star Rail" to "https://hsr.hoyoverse.com"),
     listOf("mobile legends", "mlbb") to ("Mobile Legends" to "https://m.mobilelegends.com"),
     listOf("valorant") to ("Valorant" to "https://playvalorant.com"),
+    listOf("nvidia") to ("NVIDIA" to "https://www.nvidia.com"),
+    listOf("amd") to ("AMD" to "https://www.amd.com"),
+    listOf("intel") to ("Intel" to "https://www.intel.com"),
 )
 
 // Question shapes like "denia website github official yang mana?" / "situs resmi shopee?" / "where is the github site".
 private val SITE_QUESTION = Regex(
-    """\b(website|web|situs|site|link|url|halaman|homepage|official|resmi|buka|open|cari|search)\b""",
+    """\b(website|web|situs|site|link|url|halaman|homepage|official|resmi|buka|open|cari|search|carikan|cariin|find|goto|go to)\b""",
     RegexOption.IGNORE_CASE,
 )
 private val FILLER = Regex(
-    """\b(denia|website|web|situs|site|link|url|halaman|homepage|official|resmi|officialnya|resminya|yang|mana|dimana|di mana|itu|apa|apaan|dong|sih|nya|tolong|please|coba|the|is|what|which|where|of|for|buka|open|cari|search|carikan|find|me|kan|ya|deh|aja)\b""",
+    """\b(denia|website|web|situs|site|link|url|halaman|homepage|official|resmi|officialnya|resminya|yang|mana|dimana|di mana|itu|apa|apaan|dong|sih|nya|tolong|please|coba|the|is|what|which|where|of|for|buka|open|cari|search|carikan|cariin|find|me|kan|ya|deh|aja|ga|gak|nggak|dulu)\b""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -217,11 +244,12 @@ fun lookupSite(text: String, lang: Lang, engine: SearchEngine): DeniaReply? {
             ),
             mood = Mood.HAPPY,
             action = DeniaAction.OPEN_URL,
-            pending = PendingOpen(url, label),
+            pending = PendingOpen(url, label, PendingActionType.OPEN_URL, target = label),
         )
     }
 
-    val query = URLEncoder.encode("$name official site", "UTF-8")
+    // Fallback URL if the runtime web search fails: the configured engine's search page.
+    val fallback = engine.queryUrl + URLEncoder.encode("$name official site", "UTF-8")
     return DeniaReply(
         text = tx(
             lang,
@@ -230,7 +258,7 @@ fun lookupSite(text: String, lang: Lang, engine: SearchEngine): DeniaReply? {
         ),
         mood = Mood.NEUTRAL,
         action = DeniaAction.OPEN_URL,
-        pending = PendingOpen(engine.queryUrl + query, name),
+        pending = PendingOpen(fallback, name, PendingActionType.SEARCH_AND_OPEN_OFFICIAL, target = name),
     )
 }
 
@@ -244,12 +272,12 @@ fun matchLocal(message: String, lang: Lang, engine: SearchEngine): DeniaReply? {
     return null
 }
 
-/** Shown when the message is free-form and there is no Gemini key to answer it. */
+/** Shown when the message is free-form and there is no OpenRouter key to answer it. */
 fun offlineReply(lang: Lang): DeniaReply = DeniaReply(
     tx(
         lang,
-        "My AI brain is not connected yet. Add a Gemini key in Settings (free at aistudio.google.com)~ Until then I can still open tabs, change theme, and find official sites.",
-        "Otak AI-ku belum tersambung. Isi key Gemini di Pengaturan (gratis di aistudio.google.com)~ Sementara itu aku masih bisa buka tab, ganti tema, dan cari situs resmi.",
+        "My AI brain is not connected yet. Add an OpenRouter key in Settings (openrouter.ai/keys)~ Until then I can still open tabs, change theme, and find official sites.",
+        "Otak AI-ku belum tersambung. Isi key OpenRouter di Pengaturan (openrouter.ai/keys)~ Sementara itu aku masih bisa buka tab, ganti tema, dan cari situs resmi.",
     ),
     Mood.NEUTRAL,
 )
@@ -257,3 +285,97 @@ fun offlineReply(lang: Lang): DeniaReply = DeniaReply(
 fun deniaSuggestions(lang: Lang): List<String> =
     if (lang == Lang.ID) listOf("Sembunyikan Denia", "Tab baru", "Tema sakura", "Website GitHub yang mana?")
     else listOf("Hide Denia", "New tab", "Sakura theme", "Which site is GitHub?")
+
+/* ============================================================================
+ * Confirmation detection: turns "yes / ya / buka / iya buka / ok, open it" into
+ * a Boolean instead of shipping it to Google as a search query.
+ * ============================================================================ */
+
+private val YES_WORDS = Regex(
+    """^\s*(y|yes|yes,?\s*open|yes,?\s*please|yeah|yep|yup|sure|ok|okay|okey|oke|buka|iya|ya|yaudah|ayo|boleh|silakan|silahkan|lanjut|jalan|go|do it|open it|open,?\s*please|pls|please|of course)[\s.!,]*$""",
+    RegexOption.IGNORE_CASE,
+)
+private val NO_WORDS = Regex(
+    """^\s*(n|no|nope|nah|jangan|tidak|gak|nggak|ngga|engga|batal|cancel|stop|skip|nope,?\s*thanks|no thanks|nvm|never mind)[\s.!,]*$""",
+    RegexOption.IGNORE_CASE,
+)
+
+fun isYesAnswer(text: String): Boolean = YES_WORDS.matches(text.trim())
+fun isNoAnswer(text: String): Boolean = NO_WORDS.matches(text.trim())
+
+/* ============================================================================
+ * Runtime web search — Denia uses the USER'S internet (no API key needed) to
+ * find the top real result and open it in a new tab. DuckDuckGo HTML endpoint
+ * returns plain HTML that is trivial to parse, and does not require a key.
+ *
+ * Callers should invoke this from a coroutine (Dispatchers.IO already applied).
+ * Never called from the UI thread.
+ * ============================================================================ */
+private val DDG_HTML_ENDPOINT = "https://html.duckduckgo.com/html/?q="
+private val UA =
+    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+
+// Result href on the DDG HTML page looks like:
+//   /l/?uddg=<url-encoded-real-url>&rut=...
+// or occasionally already an absolute URL.
+private val DDG_HREF = Regex("""<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)""", RegexOption.IGNORE_CASE)
+
+/** Best-effort blocklist: skip trackers / redirectors / ad hosts, prefer the real destination. */
+private val SEARCH_SKIP_HOSTS = listOf(
+    "duckduckgo.com", "google.com/aclk", "bing.com/aclick",
+    "youtube.com/redirect",
+)
+
+data class WebSearchHit(val url: String, val host: String)
+
+/** Returns the best organic hit for `query`, or null on failure. Runs on Dispatchers.IO. */
+suspend fun deniaWebSearch(query: String): WebSearchHit? = withContext(Dispatchers.IO) {
+    val q = query.trim().ifBlank { return@withContext null }
+    val encoded = URLEncoder.encode(q, "UTF-8")
+    var conn: HttpURLConnection? = null
+    try {
+        conn = URL(DDG_HTML_ENDPOINT + encoded).openConnection() as HttpURLConnection
+        conn.instanceFollowRedirects = true
+        conn.connectTimeout = 8_000
+        conn.readTimeout = 12_000
+        conn.setRequestProperty("User-Agent", UA)
+        conn.setRequestProperty("Accept", "text/html,application/xhtml+xml")
+        conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9,id;q=0.8")
+        val code = conn.responseCode
+        if (code !in 200..299) return@withContext null
+        val html = conn.inputStream.bufferedReader().use { it.readText() }
+
+        for (match in DDG_HREF.findAll(html)) {
+            val raw = match.groupValues[1]
+            val target = decodeDdgHref(raw) ?: continue
+            if (SEARCH_SKIP_HOSTS.any { target.contains(it, ignoreCase = true) }) continue
+            val host = runCatching { java.net.URI(target).host?.removePrefix("www.") }.getOrNull()
+                ?: continue
+            if (host.isBlank()) continue
+            return@withContext WebSearchHit(target, host)
+        }
+        null
+    } catch (_: Exception) {
+        null
+    } finally {
+        conn?.disconnect()
+    }
+}
+
+/** DDG wraps result URLs in `/l/?uddg=<encoded>&...`. Unwrap when possible, else pass through. */
+private fun decodeDdgHref(href: String): String? {
+    if (href.isBlank()) return null
+    val cleaned = when {
+        href.startsWith("//") -> "https:$href"
+        else -> href
+    }
+    // Grab uddg param if present.
+    val uddg = Regex("""[?&]uddg=([^&]+)""").find(cleaned)?.groupValues?.getOrNull(1)
+    val resolved = if (uddg != null) {
+        runCatching { java.net.URLDecoder.decode(uddg, "UTF-8") }.getOrNull() ?: return null
+    } else {
+        cleaned
+    }
+    // Only accept absolute http(s) URLs.
+    return if (resolved.startsWith("http://") || resolved.startsWith("https://")) resolved else null
+}

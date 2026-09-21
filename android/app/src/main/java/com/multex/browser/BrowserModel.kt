@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.webkit.WebViewFeature
@@ -113,8 +114,18 @@ class BrowserModel(private val activity: Activity) {
     var overlay by mutableStateOf(Overlay.NONE)
     var directMode by mutableStateOf(false)
     var chatOpen by mutableStateOf(false)
-    /** Fullscreen mode: the chrome bars collapse into a single floating orb (Immersive.kt). */
-    var immersiveMode by mutableStateOf(false)
+    /** Denia's live on-screen center (root pixels). The chat panel pivots out of this point. */
+    var deniaAnchor by mutableStateOf<Offset?>(null)
+    /** Bump to ask the chat bar to play its collapse-into-Denia animation, then close. */
+    var chatCloseSignal by mutableIntStateOf(0)
+        private set
+    /**
+     * Fullscreen state machine (Immersive.kt): the chrome bars are absorbed into a single
+     * floating orb and released back out of it. Transitions (ENTERING / EXITING) ignore
+     * further fullscreen input, so double taps or spam can never corrupt the state.
+     */
+    var fsState by mutableStateOf(FsState.NORMAL)
+        private set
 
     var cue by mutableStateOf<Cue?>(null)
         private set
@@ -457,17 +468,44 @@ class BrowserModel(private val activity: Activity) {
         chatOpen = true
     }
 
-    /** Toggles fullscreen mode: bars shrink into the floating orb / unfold back out of it. */
+    /** Closes the chat bar through its reverse (absorb-back-into-Denia) animation. */
+    fun closeChatAnimated() {
+        chatCloseSignal += 1
+    }
+
+    /** Enter fullscreen (start the absorption) or leave it (release the chrome from the orb). */
     fun toggleImmersive() {
-        immersiveMode = !immersiveMode
-        overlay = Overlay.NONE
-        if (immersiveMode) {
-            nudge(
-                tx(lang, "Fullscreen! Drag the orb around, long-press it to bring the bars back~", "Layar penuh! Geser bolanya ke mana aja, tahan buat balikin bar-nya~"),
-                Mood.HAPPY,
-                true,
-            )
+        when (fsState) {
+            FsState.NORMAL -> {
+                overlay = Overlay.NONE
+                chatOpen = false
+                fsState = FsState.ENTERING
+                nudge(
+                    tx(lang, "Fullscreen! Tap the orb for controls, hold it to bring the bars back~", "Layar penuh! Ketuk bolanya buat kontrol, tahan buat balikin bar-nya~"),
+                    Mood.HAPPY,
+                    true,
+                )
+            }
+            FsState.ORB, FsState.MENU_OPEN -> exitImmersive()
+            FsState.ENTERING, FsState.EXITING -> Unit // mid-transition: ignore, state stays consistent
         }
+    }
+
+    /** Releases the chrome back out of the orb. Only valid from a settled fullscreen state. */
+    fun exitImmersive() {
+        if (fsState == FsState.ORB || fsState == FsState.MENU_OPEN) fsState = FsState.EXITING
+    }
+
+    /** Animation-completion callbacks from ImmersiveOrb; invalid transitions are dropped. */
+    fun applyFsState(next: FsState) {
+        val valid = when (fsState) {
+            FsState.ENTERING -> next == FsState.ORB
+            FsState.EXITING -> next == FsState.NORMAL
+            FsState.ORB -> next == FsState.MENU_OPEN
+            FsState.MENU_OPEN -> next == FsState.ORB
+            FsState.NORMAL -> false
+        }
+        if (valid) fsState = next
     }
 
     fun openOverlay(o: Overlay) {

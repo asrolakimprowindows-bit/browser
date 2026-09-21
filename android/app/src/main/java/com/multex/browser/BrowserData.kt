@@ -68,17 +68,38 @@ fun engineFrom(id: String?) = ENGINES.firstOrNull { it.id == id } ?: ENGINES.fir
 
 enum class Overlay { NONE, TABS, SESSIONS, SETTINGS, MENU, SHORTCUT, SESSION_NAME }
 
+/** Detail level of the fullscreen orb's black-hole / laser effects (see Immersive.kt). */
+enum class OrbDetail(val id: String, val label: String) {
+    POWERSAVE("powersave", "Power save · 30fps"),
+    BALANCE("balance", "Balance · 60fps"),
+    MAX("max", "Max");
+
+    companion object {
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: BALANCE
+    }
+}
+
 /* ---------- Settings ---------- */
 
 /** The remote AI service used only for Denia's free-form chat. */
 enum class AiProvider(val id: String) {
-    GEMINI("gemini"),
+    OPENROUTER("openrouter"),
     OPENAI_COMPATIBLE("openai_compatible");
 
     companion object {
-        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: GEMINI
+        // The retired "gemini" provider id migrates to OpenRouter on load.
+        fun from(id: String?) = entries.firstOrNull { it.id == id } ?: OPENROUTER
     }
 }
+
+/** Where to create an OpenRouter key (linked from Settings). */
+const val OPENROUTER_KEY_URL = "https://openrouter.ai/keys"
+
+/**
+ * Default OpenRouter model for Denia's free-form chat. This is the single source of truth;
+ * change it here, not in call sites. Pick any model id from https://openrouter.ai/models.
+ */
+const val OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 data class Settings(
     val companionEnabled: Boolean = true,
@@ -92,16 +113,20 @@ data class Settings(
     val httpsOnly: Boolean = true,
     /** Ask sites for their desktop version. */
     val desktopSite: Boolean = false,
-    /** Google AI Studio key. When set, Denia answers free-form questions through Gemini. */
-    val geminiKey: String = "",
+    /** OpenRouter key (openrouter.ai/keys). When set, Denia answers free-form questions through OpenRouter. */
+    val openRouterKey: String = "",
+    /** OpenRouter model id; falls back to [OPENROUTER_DEFAULT_MODEL] when blank. */
+    val openRouterModel: String = "",
     /** Which remote AI API Denia uses when a local command does not match. */
-    val aiProvider: AiProvider = AiProvider.GEMINI,
+    val aiProvider: AiProvider = AiProvider.OPENROUTER,
     /** Root URL of an OpenAI-compatible API, normally ending in /v1. */
     val openAiBaseUrl: String = "",
     /** Optional for local OpenAI-compatible servers; cloud providers normally require it. */
     val openAiApiKey: String = "",
     /** Model identifier accepted by the configured OpenAI-compatible API. */
     val openAiModel: String = "",
+    /** Fullscreen orb animation detail: 30fps powersave / 60fps balance / max (device refresh rate). */
+    val orbDetail: OrbDetail = OrbDetail.BALANCE,
 )
 
 /** Persists settings (including AI credentials) in app-private SharedPreferences. */
@@ -119,11 +144,13 @@ class SettingsStore(context: Context) {
         blockTrackers = prefs.getBoolean("blockTrackers", true),
         httpsOnly = prefs.getBoolean("httpsOnly", true),
         desktopSite = prefs.getBoolean("desktopSite", false),
-        geminiKey = prefs.getString("geminiKey", "") ?: "",
+        openRouterKey = prefs.getString("openRouterKey", "") ?: "",
+        openRouterModel = prefs.getString("openRouterModel", "") ?: "",
         aiProvider = AiProvider.from(prefs.getString("aiProvider", null)),
         openAiBaseUrl = prefs.getString("openAiBaseUrl", "") ?: "",
         openAiApiKey = prefs.getString("openAiApiKey", "") ?: "",
         openAiModel = prefs.getString("openAiModel", "") ?: "",
+        orbDetail = OrbDetail.from(prefs.getString("orbDetail", null)),
     )
 
     fun save(s: Settings) {
@@ -138,11 +165,13 @@ class SettingsStore(context: Context) {
             .putBoolean("blockTrackers", s.blockTrackers)
             .putBoolean("httpsOnly", s.httpsOnly)
             .putBoolean("desktopSite", s.desktopSite)
-            .putString("geminiKey", s.geminiKey)
+            .putString("openRouterKey", s.openRouterKey)
+            .putString("openRouterModel", s.openRouterModel)
             .putString("aiProvider", s.aiProvider.id)
             .putString("openAiBaseUrl", s.openAiBaseUrl)
             .putString("openAiApiKey", s.openAiApiKey)
             .putString("openAiModel", s.openAiModel)
+            .putString("orbDetail", s.orbDetail.id)
             .apply()
     }
 }
