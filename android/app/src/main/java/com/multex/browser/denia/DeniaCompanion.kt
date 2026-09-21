@@ -1,15 +1,12 @@
 package com.multex.browser.denia
 
 /*
- * Drop-in Jetpack Compose port of the web companion in components/denia/denia-companion.tsx.
+ * Jetpack Compose port of components/denia/denia-companion.tsx.
  *
- * Setup:
- *  1. Copy the PNGs from public/denia into app/src/main/res/drawable (names already match R.drawable).
- *  2. Place <DeniaCompanion/> as the LAST child of the Box that wraps your WebView + toolbar so it
- *     draws above everything.
- *  3. Feed `cue` from your browser state (e.g. "Opening pixiv.net~") and Denia will speak it.
- *
- * Interactions: tap = speak, drag = move, double-tap = direct mode (tap anywhere and she walks there).
+ * Interactions (same as the web preview):
+ *  - tap         she says something, and the chat bar opens
+ *  - drag        pick her up and drop her anywhere
+ *  - double-tap  direct mode: tap any spot and she walks there
  */
 
 import androidx.compose.animation.AnimatedVisibility
@@ -25,7 +22,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -42,92 +38,89 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.multex.browser.Lang
+import com.multex.browser.Palette
 import com.multex.browser.R
+import com.multex.browser.RoundIconButton
+import com.multex.browser.glassStrong
+import com.multex.browser.tx
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-enum class ThemeId(val id: String) { MIDNIGHT("midnight"), SAKURA("sakura") }
+enum class Pose { FRONT, SIDE, BACK, SIT }
 
-/*
- * Colors are Compose state so switching theme recomposes everything that reads the palette,
- * without threading a theme object through every composable.
- */
-object DeniaPalette {
-    var Ink by mutableStateOf(Color(0xFFF4F1FF))
-    var InkMuted by mutableStateOf(Color(0xFFA3A1C6))
-    var Pink by mutableStateOf(Color(0xFFF79AC8))
-    var Lavender by mutableStateOf(Color(0xFFB9A9FF))
-    var Sky by mutableStateOf(Color(0xFF8AA8FF))
-    var Midnight by mutableStateOf(Color(0xFF0A0B1C))
-    var MidnightSoft by mutableStateOf(Color(0xFF1B1D45))
-    var Surface by mutableStateOf(Color(0xFF15173A))
-    var GlassTint by mutableStateOf(Color(0x0FFFFFFF))
-    var GlassStrong by mutableStateOf(Color(0xE01A1B36))
-    var GlassBorder by mutableStateOf(Color(0x1AFFFFFF))
+enum class Mood(val wire: String) {
+    HAPPY("happy"),
+    NEUTRAL("neutral"),
+    POUT("pout");
 
-    fun applyTheme(theme: ThemeId) {
-        if (theme == ThemeId.SAKURA) {
-            Ink = Color(0xFF2B2140); InkMuted = Color(0xFF7D7297); Pink = Color(0xFFE86FAE)
-            Lavender = Color(0xFF7F6BD6); Sky = Color(0xFF5B82E6); Midnight = Color(0xFFFFF3F9)
-            MidnightSoft = Color(0xFFFFD6EA); Surface = Color(0xFFFFF8FC); GlassTint = Color(0x8CFFFFFF)
-            GlassStrong = Color(0xF0FFFAFD); GlassBorder = Color(0xD9FFFFFF)
-        } else {
-            Ink = Color(0xFFF4F1FF); InkMuted = Color(0xFFA3A1C6); Pink = Color(0xFFF79AC8)
-            Lavender = Color(0xFFB9A9FF); Sky = Color(0xFF8AA8FF); Midnight = Color(0xFF0A0B1C)
-            MidnightSoft = Color(0xFF1B1D45); Surface = Color(0xFF15173A); GlassTint = Color(0x0FFFFFFF)
-            GlassStrong = Color(0xE01A1B36); GlassBorder = Color(0x1AFFFFFF)
-        }
+    companion object {
+        fun fromWire(id: String?): Mood = entries.firstOrNull { it.wire == id } ?: HAPPY
     }
 }
 
-fun Modifier.glass(radius: Dp = 24.dp, strong: Boolean = false): Modifier =
-    clip(RoundedCornerShape(radius))
-        .background(if (strong) DeniaPalette.GlassStrong else DeniaPalette.GlassTint)
-        .border(1.dp, DeniaPalette.GlassBorder, RoundedCornerShape(radius))
-
-enum class Pose { FRONT, SIDE, BACK, SIT }
-enum class Mood { HAPPY, NEUTRAL, POUT }
+/** What the bubble shows. */
 data class Line(val text: String, val mood: Mood = Mood.HAPPY)
+
+/** A request from the browser for Denia to say something. [force] means "even if she is not chatty". */
+data class Cue(val id: Int, val text: String, val mood: Mood = Mood.HAPPY, val force: Boolean = false)
+
+private data class Marker(val at: Offset, val id: Int)
+
+private enum class BubbleAlign { START, CENTER, END }
 
 private fun tapLines(lang: Lang) = listOf(
     Line(tx(lang, "Hehe, need something?", "Hehe, butuh sesuatu?")),
     Line(tx(lang, "Denia, reporting for duty~", "Denia siap melayani~")),
     Line(tx(lang, "Hmph! Stop poking me.", "Hmph! Jangan colek-colek."), Mood.POUT),
-    Line(tx(lang, "Hold me to chat with me!", "Tahan aku kalau mau ngobrol!"), Mood.NEUTRAL),
+    Line(tx(lang, "Want me to open a new tab?", "Mau aku bukain tab baru?"), Mood.NEUTRAL),
+    Line(tx(lang, "You have been scrolling a while. Water break?", "Udah lama scroll nih. Minum dulu?"), Mood.NEUTRAL),
     Line(tx(lang, "Double-tap me and I will go wherever you point!", "Ketuk dua kali, aku ke mana pun kamu tunjuk!")),
 )
+
 private fun arriveLines(lang: Lang) = listOf(
     Line(tx(lang, "Here I am!", "Aku di sini!")),
     Line(tx(lang, "Made it~", "Sampai~")),
     Line(tx(lang, "Is this the spot?", "Di sini tempatnya?"), Mood.NEUTRAL),
+    Line(tx(lang, "Phew, that was far.", "Huft, jauh juga."), Mood.POUT),
 )
+
 private fun dropLines(lang: Lang) = listOf(
     Line(tx(lang, "Wheee!", "Wiii!")),
     Line(tx(lang, "Careful, I am fragile!", "Pelan-pelan, aku rapuh!"), Mood.POUT),
@@ -141,11 +134,29 @@ private fun poseRes(pose: Pose) = when (pose) {
     Pose.SIT -> R.drawable.denia_sit
 }
 
-private fun faceRes(mood: Mood) = when (mood) {
+fun faceRes(mood: Mood) = when (mood) {
     Mood.HAPPY -> R.drawable.face_happy
     Mood.NEUTRAL -> R.drawable.face_neutral
     Mood.POUT -> R.drawable.face_pout
 }
+
+/** Places the speech bubble above (or below) the sprite, kept inside the screen like `align` in the web build. */
+private fun Modifier.bubblePlacement(below: Boolean, align: BubbleAlign, gapPx: Int): Modifier =
+    layout { measurable, constraints ->
+        val parentW = constraints.maxWidth
+        val parentH = constraints.maxHeight
+        // Measure with no upper bound: the bubble limits its own width (max 190dp).
+        val placeable = measurable.measure(Constraints(0, Constraints.Infinity, 0, Constraints.Infinity))
+        layout(0, 0) {
+            val x = when (align) {
+                BubbleAlign.START -> 0
+                BubbleAlign.END -> parentW - placeable.width
+                BubbleAlign.CENTER -> (parentW - placeable.width) / 2
+            }
+            val y = if (below) parentH + gapPx else -placeable.height - gapPx
+            placeable.place(x, y)
+        }
+    }
 
 @Composable
 fun DeniaCompanion(
@@ -153,22 +164,34 @@ fun DeniaCompanion(
     height: Dp = 136.dp,
     petRes: Int? = null,
     chatty: Boolean = true,
-    cue: Line? = null,
+    cue: Cue? = null,
     scrollSignal: Int = 0,
     directMode: Boolean,
     onDirectModeChange: (Boolean) -> Unit,
     lang: Lang = Lang.EN,
-    onOpenChat: () -> Unit = {},
+    onTap: () -> Unit = {},
 ) {
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnDirect by rememberUpdatedState(onDirectModeChange)
+    val currentDirectMode by rememberUpdatedState(directMode)
+
     BoxWithConstraints(modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val hPx = with(density) { height.toPx() }
         val wPx = hPx * 0.78f
-        val maxX = constraints.maxWidth - wPx
-        val maxY = constraints.maxHeight - hPx - with(density) { 64.dp.toPx() }
+        val topPx = with(density) { 28.dp.toPx() }
+        val reservePx = with(density) { 64.dp.toPx() }
+        val maxX = (constraints.maxWidth - wPx).coerceAtLeast(0f)
+        val maxY = (constraints.maxHeight - hPx - reservePx).coerceAtLeast(topPx)
+        val boundsW = constraints.maxWidth.toFloat()
 
         val scope = rememberCoroutineScope()
-        val offset = remember { Animatable(Offset(maxX - 10f, maxY - 40f), Offset.VectorConverter) }
+        val offset = remember {
+            Animatable(
+                Offset(maxX - with(density) { 10.dp.toPx() }, maxY - with(density) { 40.dp.toPx() }),
+                Offset.VectorConverter,
+            )
+        }
         var pose by remember { mutableStateOf(Pose.FRONT) }
         var facingRight by remember { mutableStateOf(false) }
         var walking by remember { mutableStateOf(false) }
@@ -176,8 +199,10 @@ fun DeniaCompanion(
         var bubble by remember { mutableStateOf<Line?>(null) }
         var bubbleJob by remember { mutableStateOf<Job?>(null) }
         var idleJob by remember { mutableStateOf<Job?>(null) }
+        var marker by remember { mutableStateOf<Marker?>(null) }
+        var markerSeq by remember { mutableIntStateOf(0) }
 
-        fun clamp(p: Offset) = Offset(p.x.coerceIn(0f, maxX), p.y.coerceIn(28f, maxY))
+        fun clamp(p: Offset) = Offset(p.x.coerceIn(0f, maxX), p.y.coerceIn(topPx, maxY))
 
         fun say(line: Line, ms: Long = 3200) {
             bubble = line
@@ -211,76 +236,148 @@ fun DeniaCompanion(
             }
         }
 
+        // Keep her on screen when the usable area changes (keyboard, rotation).
+        LaunchedEffect(maxX, maxY) { offset.snapTo(clamp(offset.value)) }
         LaunchedEffect(Unit) { poke() }
-        LaunchedEffect(cue) { cue?.let { if (chatty) say(it) } }
+        LaunchedEffect(cue) { cue?.let { if (chatty || it.force) say(Line(it.text, it.mood)) } }
         LaunchedEffect(scrollSignal) {
             if (scrollSignal == 0 || walking) return@LaunchedEffect
             pose = Pose.BACK
+            poke()
             delay(1200)
             if (pose == Pose.BACK) pose = Pose.FRONT
         }
 
         if (directMode) {
+            // Full-screen catcher: the next tap anywhere is her destination.
             Box(
                 Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures { tap -> walkTo(Offset(tap.x - wPx / 2, tap.y - hPx)); poke() }
-                    }
+                    .pointerInput(wPx, hPx, maxX, maxY) {
+                        detectTapGestures { tap ->
+                            markerSeq += 1
+                            marker = Marker(tap, markerSeq)
+                            walkTo(Offset(tap.x - wPx / 2, tap.y - hPx))
+                            poke()
+                        }
+                    },
             )
             Row(
                 Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 44.dp)
-                    .glass(999.dp, strong = true)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .shadow(10.dp, CircleShape)
+                    .glassStrong(999.dp)
+                    .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(tx(lang, "Direct mode · tap anywhere", "Mode arah · ketuk di mana saja"), color = DeniaPalette.Ink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Icon(Icons.Filled.GpsFixed, contentDescription = null, tint = Palette.Pink, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    tx(lang, "Done", "Selesai"),
-                    color = DeniaPalette.Pink,
+                    tx(lang, "Direct mode · tap anywhere", "Mode arah · ketuk di mana saja"),
+                    color = Palette.Ink,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.pointerInput(Unit) { detectTapGestures { onDirectModeChange(false) } },
                 )
+                Spacer(Modifier.width(8.dp))
+                RoundIconButton(
+                    Icons.Filled.Close,
+                    contentDescription = tx(lang, "Exit direct mode", "Keluar mode arah"),
+                    onClick = { currentOnDirect(false) },
+                    size = 24.dp,
+                    iconSize = 12.dp,
+                    tint = Palette.Ink,
+                    background = Palette.Ink.copy(alpha = 0.1f),
+                )
+            }
+            marker?.let { m ->
+                key(m.id) {
+                    val progress = remember { Animatable(0f) }
+                    LaunchedEffect(Unit) {
+                        progress.animateTo(1f, tween(520))
+                        marker = null
+                    }
+                    Box(
+                        Modifier
+                            .offset { IntOffset((m.at.x - 20.dp.toPx()).roundToInt(), (m.at.y - 20.dp.toPx()).roundToInt()) }
+                            .size(40.dp)
+                            .graphicsLayer {
+                                val s = 0.3f + 1.3f * progress.value
+                                scaleX = s
+                                scaleY = s
+                                alpha = 0.9f * (1f - progress.value)
+                            }
+                            .border(2.dp, Palette.Pink, CircleShape),
+                    )
+                }
             }
         }
 
-        val bob by rememberInfiniteTransition(label = "bob").animateFloat(
+        val motion = rememberInfiniteTransition(label = "denia")
+        val floatY by motion.animateFloat(
             initialValue = 0f,
             targetValue = if (walking) -7f else -6f,
-            animationSpec = infiniteRepeatable(tween(if (walking) 190 else 1600), RepeatMode.Reverse),
-            label = "bobY",
+            animationSpec = infiniteRepeatable(
+                tween(if (walking) 190 else 1600, easing = FastOutSlowInEasing),
+                RepeatMode.Reverse,
+            ),
+            label = "floatY",
         )
+        val sway by motion.animateFloat(
+            initialValue = -1.5f,
+            targetValue = 1.5f,
+            animationSpec = infiniteRepeatable(tween(190), RepeatMode.Reverse),
+            label = "sway",
+        )
+        val hopY by motion.animateFloat(
+            initialValue = 0f,
+            targetValue = -9f,
+            animationSpec = infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "hopY",
+        )
+
+        val edge = with(density) { 70.dp.toPx() }
+        val bubbleAlign = when {
+            offset.value.x < edge -> BubbleAlign.START
+            offset.value.x + wPx > boundsW - edge -> BubbleAlign.END
+            else -> BubbleAlign.CENTER
+        }
+        val bubbleBelow = offset.value.y < with(density) { 90.dp.toPx() }
 
         Box(
             Modifier
                 .offset { IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt()) }
                 .size(with(density) { wPx.toDp() }, height)
-                .pointerInput(Unit) {
+                .pointerInput(lang, chatty) {
                     detectTapGestures(
-                        onTap = { say(tapLines(lang).random()); poke() },
-                        onLongPress = { onOpenChat(); poke() },
+                        onTap = {
+                            say(tapLines(lang).random())
+                            poke()
+                            currentOnTap()
+                        },
                         onDoubleTap = {
-                            val next = !directMode
-                            onDirectModeChange(next)
+                            val next = !currentDirectMode
+                            currentOnDirect(next)
                             say(
                                 if (next) Line(tx(lang, "Tap anywhere and I will run there!", "Ketuk di mana saja, aku lari ke sana!"))
                                 else Line(tx(lang, "Okay, staying put~", "Oke, aku diam di sini~"), Mood.NEUTRAL),
                             )
+                            poke()
                         },
                     )
                 }
-                .pointerInput(Unit) {
+                .pointerInput(maxX, maxY, lang, chatty) {
                     detectDragGestures(
                         onDragStart = { dragging = true; walking = false; pose = Pose.FRONT },
                         onDrag = { change, delta ->
                             change.consume()
                             scope.launch { offset.snapTo(clamp(offset.value + delta)) }
                         },
-                        onDragEnd = { dragging = false; if (chatty) say(dropLines(lang).random(), 2200); poke() },
+                        onDragEnd = {
+                            dragging = false
+                            if (chatty) say(dropLines(lang).random(), 2200)
+                            poke()
+                        },
                         onDragCancel = { dragging = false },
                     )
                 },
@@ -289,13 +386,14 @@ fun DeniaCompanion(
                 visible = bubble != null,
                 enter = fadeIn() + scaleIn(initialScale = 0.9f),
                 exit = fadeOut(),
-                modifier = Modifier.align(Alignment.TopCenter).offset(y = (-48).dp),
+                modifier = Modifier.bubblePlacement(bubbleBelow, bubbleAlign, with(density) { 8.dp.roundToPx() }),
             ) {
                 bubble?.let { line ->
                     Row(
                         Modifier
                             .widthIn(max = 190.dp)
-                            .glass(18.dp, strong = true)
+                            .shadow(10.dp, RoundedCornerShape(16.dp))
+                            .glassStrong(16.dp)
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -303,10 +401,16 @@ fun DeniaCompanion(
                             painterResource(faceRes(line.mood)),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(28.dp).clip(CircleShape).border(2.dp, DeniaPalette.Pink, CircleShape),
+                            modifier = Modifier.size(28.dp).clip(CircleShape).border(2.dp, Palette.Pink, CircleShape),
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text(line.text, color = DeniaPalette.Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
+                        Text(
+                            line.text,
+                            color = Palette.Ink,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            lineHeight = 17.sp,
+                        )
                     }
                 }
             }
@@ -314,9 +418,9 @@ fun DeniaCompanion(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .offset(y = if (pose == Pose.SIT || dragging) 0.dp else bob.dp)
+                    .offset { IntOffset(0, if (pose == Pose.SIT || dragging) 0 else floatY.dp.roundToPx()) }
                     .scale(if (dragging) 1.06f else 1f)
-                    .graphicsLayer { rotationZ = if (dragging) -4f else 0f },
+                    .graphicsLayer { rotationZ = if (dragging) -4f else if (walking) sway else 0f },
             ) {
                 petRes?.let {
                     Image(
@@ -325,6 +429,7 @@ fun DeniaCompanion(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .offset(x = -(height * 0.2f))
+                            .offset { IntOffset(0, hopY.dp.roundToPx()) }
                             .height(height * 0.38f),
                     )
                 }

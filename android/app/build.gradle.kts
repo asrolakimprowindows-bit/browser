@@ -50,6 +50,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    // Layers, Tune, Security, GpsFixed, ChatBubble, ... (icons that are not in the core set)
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.webkit:webkit:1.12.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

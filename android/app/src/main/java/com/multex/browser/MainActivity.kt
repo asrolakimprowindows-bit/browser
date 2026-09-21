@@ -5,29 +5,36 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
-    private var incomingUrl by mutableStateOf<String?>(null)
+    private lateinit var model: BrowserModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        incomingUrl = intent?.dataString
-        setContent {
-            MultexTheme {
-                BrowserScreen(
-                    externalUrl = incomingUrl,
-                    onExternalUrlConsumed = { incomingUrl = null },
-                )
-            }
-        }
+        model = BrowserModel(this)
+        // A link opened from another app (this app is registered for http/https).
+        intent?.dataString?.let { model.openExternal(it) }
+        setContent { MultexRoot(model) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        incomingUrl = intent.dataString
+        intent.dataString?.let { model.openExternal(it) }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        model.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        model.onResume()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        model.destroy()
     }
 }

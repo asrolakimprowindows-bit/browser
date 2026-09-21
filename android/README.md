@@ -3,6 +3,20 @@
 Native Jetpack Compose port of the web preview: a WebView browser with the Denia companion
 (tap = talk, drag = move, double-tap = direct mode) drawn above the page.
 
+## Denia AI
+
+In **Settings → Denia AI**, choose either **Gemini** or **OpenAI compat.**.
+
+For an OpenAI-compatible provider, enter:
+
+- **Base API URL** — normally ending in `/v1`, e.g. `https://api.example.com/v1`; a complete
+  `/chat/completions` URL also works.
+- **API key** — optional for local servers.
+- **Model** — the model ID offered by that provider.
+
+Denia uses the standard Chat Completions request format. Her offline commands and official-site
+lookup continue to work without any remote AI configuration.
+
 ## Build (GitHub Actions — recommended, zero setup)
 
 1. Push this repo to GitHub.

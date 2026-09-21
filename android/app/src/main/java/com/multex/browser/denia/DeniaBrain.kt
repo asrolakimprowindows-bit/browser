@@ -1,24 +1,43 @@
 package com.multex.browser.denia
 
+import com.multex.browser.Lang
 import com.multex.browser.SearchEngine
+import com.multex.browser.tx
 import java.net.URLEncoder
 
 /*
  * Denia's offline brain: bilingual strings, local command matching, and the "which site is X?"
- * lookup. Everything here runs on-device with no network or API key.
+ * lookup. Everything here runs on-device with no network or API key. Free-form questions go to
+ * Gemini (see GeminiClient) when the user has added a key in Settings.
  */
 
-enum class Lang(val id: String, val label: String) {
-    EN("en", "English"),
-    ID("id", "Indonesia"),
-}
+/** Same action list as lib/denia-commands.ts. RELOAD and GO_BACK are Android-only, local commands. */
+enum class DeniaAction(val wire: String) {
+    NONE("none"),
+    HIDE_DENIA("hide_denia"),
+    SHOW_DENIA("show_denia"),
+    NEW_TAB("new_tab"),
+    OPEN_TABS("open_tabs"),
+    OPEN_SETTINGS("open_settings"),
+    OPEN_SESSIONS("open_sessions"),
+    SAVE_SESSION("save_session"),
+    DIRECT_MODE("direct_mode"),
+    THEME_SAKURA("theme_sakura"),
+    THEME_MIDNIGHT("theme_midnight"),
+    GO_HOME("go_home"),
+    OPEN_URL("open_url"),
+    RELOAD("reload"),
+    GO_BACK("go_back");
 
-/** Pick the string for the active language. Keeps call sites short: tx(lang, "Hide", "Sembunyikan"). */
-fun tx(lang: Lang, en: String, id: String): String = if (lang == Lang.ID) id else en
+    companion object {
+        /** Actions Gemini is allowed to pick (identical to DENIA_ACTIONS on the web). */
+        val FOR_AI = listOf(
+            NONE, HIDE_DENIA, SHOW_DENIA, NEW_TAB, OPEN_TABS, OPEN_SETTINGS, OPEN_SESSIONS,
+            SAVE_SESSION, DIRECT_MODE, THEME_SAKURA, THEME_MIDNIGHT, GO_HOME, OPEN_URL,
+        )
 
-enum class DeniaAction {
-    NONE, HIDE_DENIA, SHOW_DENIA, NEW_TAB, OPEN_SETTINGS, DIRECT_MODE,
-    THEME_SAKURA, THEME_MIDNIGHT, GO_HOME, RELOAD, GO_BACK, OPEN_URL,
+        fun fromWire(id: String?): DeniaAction = entries.firstOrNull { it.wire == id } ?: NONE
+    }
 }
 
 /** A URL Denia wants to open, but only after the user confirms with Yes. */
@@ -47,6 +66,15 @@ private val RULES = listOf(
     },
     Rule("""\b(setting\w*|pengaturan|setelan)\b""") {
         DeniaReply(tx(it, "Opening settings~ Dress me up nicely, okay?", "Buka pengaturan~ Dandanin aku yang cantik ya?"), Mood.HAPPY, DeniaAction.OPEN_SETTINGS)
+    },
+    Rule("""\b(save|simpan)\b.*\b(session|sesi|tabs?)\b|\b(session|sesi)\b.*\b(save|simpan)\b""") {
+        DeniaReply(tx(it, "Saving your tabs as a session!", "Simpan tab-mu jadi sesi!"), Mood.HAPPY, DeniaAction.SAVE_SESSION)
+    },
+    Rule("""\b(sessions?|sesi)\b""") {
+        DeniaReply(tx(it, "Here are your sessions~", "Ini sesi-sesimu~"), Mood.NEUTRAL, DeniaAction.OPEN_SESSIONS)
+    },
+    Rule("""\b(tabs|semua tab|list tab|daftar tab)\b""") {
+        DeniaReply(tx(it, "Here are all your tabs!", "Ini semua tab-mu!"), Mood.NEUTRAL, DeniaAction.OPEN_TABS)
     },
     Rule("""\b(direct|sini|kesini|ke sini|follow|ikut)\b""") {
         DeniaReply(tx(it, "Tap anywhere and I will run there!", "Ketuk di mana saja, aku lari ke sana!"), Mood.HAPPY, DeniaAction.DIRECT_MODE)
@@ -206,23 +234,26 @@ fun lookupSite(text: String, lang: Lang, engine: SearchEngine): DeniaReply? {
     )
 }
 
-/** Local-only reply. Site questions first (they contain "?"), then short commands, then a friendly fallback. */
-fun deniaReply(message: String, lang: Lang, engine: SearchEngine): DeniaReply {
+/** Local-only match. Site questions first (they contain "?"), then short commands. Null means "ask the AI". */
+fun matchLocal(message: String, lang: Lang, engine: SearchEngine): DeniaReply? {
     val t = message.trim()
     lookupSite(t, lang, engine)?.let { return it }
     if (t.length <= 60 && !t.contains('?')) {
         RULES.firstOrNull { it.regex.containsMatchIn(t) }?.let { return it.build(lang) }
     }
-    return DeniaReply(
-        tx(
-            lang,
-            "I can hide, show, change theme, open settings, or find official sites for you~ Try \"which site is GitHub?\"",
-            "Aku bisa sembunyi, muncul, ganti tema, buka pengaturan, atau cari situs resmi~ Coba \"website github yang mana?\"",
-        ),
-        Mood.NEUTRAL,
-    )
+    return null
 }
 
+/** Shown when the message is free-form and there is no Gemini key to answer it. */
+fun offlineReply(lang: Lang): DeniaReply = DeniaReply(
+    tx(
+        lang,
+        "My AI brain is not connected yet. Add a Gemini key in Settings (free at aistudio.google.com)~ Until then I can still open tabs, change theme, and find official sites.",
+        "Otak AI-ku belum tersambung. Isi key Gemini di Pengaturan (gratis di aistudio.google.com)~ Sementara itu aku masih bisa buka tab, ganti tema, dan cari situs resmi.",
+    ),
+    Mood.NEUTRAL,
+)
+
 fun deniaSuggestions(lang: Lang): List<String> =
-    if (lang == Lang.ID) listOf("Sembunyikan Denia", "Tema sakura", "Website GitHub yang mana?", "Pengaturan")
-    else listOf("Hide Denia", "Sakura theme", "Which site is GitHub?", "Settings")
+    if (lang == Lang.ID) listOf("Sembunyikan Denia", "Tab baru", "Tema sakura", "Website GitHub yang mana?")
+    else listOf("Hide Denia", "New tab", "Sakura theme", "Which site is GitHub?")
