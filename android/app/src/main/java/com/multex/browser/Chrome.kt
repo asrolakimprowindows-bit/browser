@@ -327,6 +327,9 @@ fun HomeScreen(
     onNavigate: (String) -> Unit,
     onSwitchTab: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenProfile: () -> Unit,
+    profileEmoji: String,
+    profileImagePath: String,
     onDirect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -360,17 +363,12 @@ fun HomeScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            Box(
-                Modifier.size(40.dp).glass(CircleShape).press(onClick = onOpenSettings),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    LucideSettings2,
-                    contentDescription = tx(lang, "Open settings", "Buka pengaturan"),
-                    tint = Palette.Ink,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            ProfileAvatarButton(
+                emoji = profileEmoji,
+                imagePath = profileImagePath,
+                contentDescription = tx(lang, "Open profile", "Buka profil"),
+                onClick = onOpenProfile,
+            )
         }
 
         // greeting

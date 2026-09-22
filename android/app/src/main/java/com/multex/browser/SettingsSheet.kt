@@ -1,5 +1,8 @@
 package com.multex.browser
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+
 /* Port of SettingsOverlay / CreditCard from components/browser/overlays.tsx (Gemini key field replaced by OpenRouter). */
 
 import android.content.Intent
@@ -28,6 +31,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.GpsFixed
@@ -63,6 +71,14 @@ import androidx.compose.ui.unit.sp
 
 
 
+private enum class SettingsCategory(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    AI("AI", Icons.Filled.AutoAwesome),
+    APPEARANCE("Appearance", Icons.Filled.Palette),
+    BROWSER("Browser", Icons.Filled.Language),
+    PRIVACY("Privacy", Icons.Filled.Security),
+    SYSTEM("System", Icons.Filled.Tune),
+}
+
 @Composable
 fun BoxScope.SettingsOverlay(
     lang: Lang,
@@ -74,8 +90,17 @@ fun BoxScope.SettingsOverlay(
     onClose: () -> Unit,
 ) {
     var confirmClear by remember { mutableStateOf(false) }
+    var category by remember { mutableStateOf(SettingsCategory.AI) }
 
     OverlaySheet(title = tx(lang, "Settings", "Pengaturan"), subtitle = "Multex Browser", onClose = onClose) {
+        SettingsCategoryPicker(lang, category) { category = it }
+        Crossfade(
+            targetState = category,
+            animationSpec = tween(Motion.ms(220)),
+            label = "settings-category",
+        ) { selected ->
+            when (selected) {
+                SettingsCategory.AI -> {
         SectionTitle("Denia", first = true)
         SettingRow(tx(lang, "Show Denia", "Tampilkan Denia"), tx(lang, "Companion on every page", "Teman di setiap halaman")) {
             GlassSwitch(settings.companionEnabled, { v -> onChange { it.copy(companionEnabled = v) } }, "Show Denia")
@@ -192,28 +217,45 @@ fun BoxScope.SettingsOverlay(
             }
         }
 
+                } // AI
+
+                SettingsCategory.APPEARANCE -> {
         SectionTitle(tx(lang, "App", "Aplikasi"))
         SettingRow(
             tx(lang, "Language", "Bahasa"),
-            tx(lang, "Denia and the interface follow this", "Denia dan tampilan mengikuti ini"),
+            tx(lang, "Denia and the interface follow this. 22 languages.", "Denia dan tampilan mengikuti ini. 22 bahasa."),
             stacked = true,
         ) {
-            Segmented(
-                value = settings.language,
-                options = Lang.entries.map { it to it.label },
-                onChange = { v -> onChange { it.copy(language = v) } },
-            )
+            LanguagePicker(value = settings.language, onChange = { v -> onChange { it.copy(language = v) } })
         }
 
         SectionTitle(tx(lang, "Appearance", "Tampilan"))
-        SettingRow(tx(lang, "Theme", "Tema"), stacked = true) {
+        SettingRow(
+            tx(lang, "Theme", "Tema"),
+            tx(lang, "Liquid Glass is the iOS-style frosted look", "Liquid Glass itu gaya kaca buram ala iOS"),
+            stacked = true,
+        ) {
             Segmented(
                 value = settings.theme,
                 options = ThemeId.entries.map { it to it.label },
                 onChange = { v -> onChange { it.copy(theme = v) } },
             )
         }
+        SettingRow(
+            tx(lang, "Animations", "Animasi"),
+            tx(lang, "Off = instant, Full = maximum flair on every transition", "Off = instan, Full = animasi maksimal di semua transisi"),
+            stacked = true,
+        ) {
+            Segmented(
+                value = settings.animLevel,
+                options = AnimLevel.entries.map { it to it.label },
+                onChange = { v -> onChange { it.copy(animLevel = v) } },
+            )
+        }
 
+                } // APPEARANCE
+
+                SettingsCategory.BROWSER -> {
         SectionTitle(tx(lang, "Search", "Pencarian"))
         SettingRow(tx(lang, "Default engine", "Mesin bawaan"), stacked = true) {
             Segmented(
@@ -223,6 +265,35 @@ fun BoxScope.SettingsOverlay(
             )
         }
 
+        SectionTitle(tx(lang, "Browser", "Peramban"))
+        SettingRow(tx(lang, "Desktop site", "Situs desktop"), tx(lang, "Ask sites for their desktop version", "Minta versi desktop dari situs")) {
+            GlassSwitch(settings.desktopSite, { v -> onChange { it.copy(desktopSite = v) } }, "Desktop site")
+        }
+        SettingRow(
+            tx(lang, "Download location", "Lokasi unduhan"),
+            tx(lang, "Downloads folder, or hand files to an external downloader (1DM, ADM...)", "Folder Download, atau oper file ke downloader eksternal (1DM, ADM...)"),
+            stacked = true,
+        ) {
+            Segmented(
+                value = settings.downloadMode,
+                options = listOf(
+                    DownloadMode.INTERNAL to tx(lang, "Downloads folder", "Folder Download"),
+                    DownloadMode.EXTERNAL to tx(lang, "External app", "Aplikasi eksternal"),
+                ),
+                onChange = { v -> onChange { it.copy(downloadMode = v) } },
+            )
+        }
+        SettingRow(tx(lang, "Ask to open native apps", "Tanya sebelum buka aplikasi"), tx(lang, "YouTube, Discord and friends ask first", "YouTube, Discord dan kawan-kawan nanya dulu")) {
+            GlassSwitch(settings.appLinkPrompt, { v -> onChange { it.copy(appLinkPrompt = v) } }, "App link prompt")
+        }
+        SettingRow(tx(lang, "Notifications", "Notifikasi"), tx(lang, "Download status and browser alerts", "Status unduhan dan pemberitahuan browser")) {
+            GlassSwitch(settings.notifications, { v -> onChange { it.copy(notifications = v) } }, "Notifications")
+        }
+
+
+                } // BROWSER
+
+                SettingsCategory.PRIVACY -> {
         SectionTitle(tx(lang, "Privacy", "Privasi"))
         SettingRow(tx(lang, "Block trackers", "Blokir pelacak"), tx(lang, "Shield counter in the address bar", "Penghitung perisai di bar alamat")) {
             GlassSwitch(settings.blockTrackers, { v -> onChange { it.copy(blockTrackers = v) } }, "Block trackers")
@@ -230,10 +301,24 @@ fun BoxScope.SettingsOverlay(
         SettingRow("HTTPS only", tx(lang, "Upgrade insecure requests", "Naikkan permintaan tidak aman ke HTTPS")) {
             GlassSwitch(settings.httpsOnly, { v -> onChange { it.copy(httpsOnly = v) } }, "HTTPS only")
         }
+        SettingRow(tx(lang, "Ad blocker", "Pemblokir iklan"), tx(lang, "Blocks ad-serving hosts (can be toggled anytime)", "Blokir host penyedia iklan (bisa on/off kapan aja)")) {
+            GlassSwitch(settings.adBlock, { v -> onChange { it.copy(adBlock = v) } }, "Ad blocker")
+        }
 
-        SectionTitle(tx(lang, "Browser", "Peramban"))
-        SettingRow(tx(lang, "Desktop site", "Situs desktop"), tx(lang, "Ask sites for their desktop version", "Minta versi desktop dari situs")) {
-            GlassSwitch(settings.desktopSite, { v -> onChange { it.copy(desktopSite = v) } }, "Desktop site")
+                } // PRIVACY
+
+                SettingsCategory.SYSTEM -> {
+        SectionTitle(tx(lang, "Accessibility", "Aksesibilitas"))
+        SettingRow(
+            tx(lang, "Text size", "Ukuran teks"),
+            tx(lang, "Scales text on every page", "Perbesar/perkecil teks di semua halaman"),
+            stacked = true,
+        ) {
+            Segmented(
+                value = settings.textZoom,
+                options = listOf(75 to "75%", 100 to "100%", 125 to "125%", 150 to "150%"),
+                onChange = { v -> onChange { it.copy(textZoom = v) } },
+            )
         }
         SettingRow(
             tx(lang, "Fullscreen orb detail", "Detail orb layar penuh"),
@@ -280,7 +365,59 @@ fun BoxScope.SettingsOverlay(
 
         SectionTitle(tx(lang, "About", "Tentang"))
         CreditCard(lang)
+                } // SYSTEM
+            }
+        }
     }
+}
+
+@Composable
+private fun SettingsCategoryPicker(
+    lang: Lang,
+    selected: SettingsCategory,
+    onSelect: (SettingsCategory) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SettingsCategory.entries.forEach { category ->
+            val active = category == selected
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (active) Palette.Pink.copy(alpha = 0.2f) else Palette.Ink.copy(alpha = 0.06f))
+                    .then(if (active) Modifier.border(1.dp, Palette.Pink.copy(alpha = 0.65f), RoundedCornerShape(14.dp)) else Modifier)
+                    .press { onSelect(category) }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    category.icon,
+                    contentDescription = null,
+                    tint = if (active) Palette.Pink else Palette.InkMuted,
+                    modifier = Modifier.size(15.dp),
+                )
+                Text(
+                    when (category) {
+                        SettingsCategory.AI -> tx(lang, "AI", "AI")
+                        SettingsCategory.APPEARANCE -> tx(lang, "Appearance", "Tampilan")
+                        SettingsCategory.BROWSER -> tx(lang, "Browser", "Browser")
+                        SettingsCategory.PRIVACY -> tx(lang, "Privacy", "Privasi")
+                        SettingsCategory.SYSTEM -> tx(lang, "System", "Sistem")
+                    },
+                    color = if (active) Palette.Ink else Palette.InkMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(6.dp))
 }
 
 @Composable
@@ -497,7 +634,7 @@ private fun CreditCard(lang: Lang) {
                 Text("Shina", color = Palette.Ink, fontFamily = Fonts.Display, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
             }
             Text(
-                "v1.0",
+                "v2.0",
                 color = Palette.InkMuted,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,

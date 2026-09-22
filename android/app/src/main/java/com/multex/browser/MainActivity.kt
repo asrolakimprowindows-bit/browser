@@ -26,6 +26,10 @@ class MainActivity : ComponentActivity() {
                     View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         }
         model = BrowserModel(this)
+        // Needed on API 33+ for download-status notifications (ignored silently when denied).
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
+        }
         // A link opened from another app (this app is registered for http/https).
         intent?.dataString?.let { model.openExternal(it) }
         setContent { MultexRoot(model) }

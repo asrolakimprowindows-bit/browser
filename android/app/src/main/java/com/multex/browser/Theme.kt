@@ -57,7 +57,15 @@ object Palette {
     val TileInk = Color(0xFF17172F)
 
     fun apply(theme: ThemeId) {
-        if (theme == ThemeId.SAKURA) {
+        if (theme == ThemeId.LIQUID) {
+            // Liquid Glass (iOS-style): deep space blue, frosted panels, icy cyan accents.
+            isLight = false
+            Ink = Color(0xFFF2F7FF); InkMuted = Color(0xFF8FA3C8)
+            Pink = Color(0xFF7CD4FD); Lavender = Color(0xFF5E8CE6); Sky = Color(0xFF7CE7F4)
+            Glass = Color(0x1FFFFFFF); GlassStrong = Color(0xC2121A30); GlassBorder = Color(0x40FFFFFF)
+            ScreenTop = Color(0xFF0B1020); ScreenBottom = Color(0xFF04060F)
+            GlowA = Color(0xFF1E3A6E); GlowB = Color(0xFF0E4A5E)
+        } else if (theme == ThemeId.SAKURA) {
             isLight = true
             Ink = Color(0xFF2B2140); InkMuted = Color(0xFF7D7297)
             Pink = Color(0xFFE86FAE); Lavender = Color(0xFF7F6BD6); Sky = Color(0xFF5B82E6)
@@ -177,25 +185,51 @@ fun Modifier.glassStrong(radius: Dp): Modifier = glassStrong(RoundedCornerShape(
 fun Modifier.liquidGlass(shape: Shape = RoundedCornerShape(16.dp)): Modifier {
     val light = Palette.isLight
     val upper = if (light) {
-        Color.White.copy(alpha = 0.68f)
+        Color.White.copy(alpha = 0.74f)
     } else {
-        Color(0xFF20264C).copy(alpha = 0.56f)
+        Color(0xFF2C3767).copy(alpha = 0.60f)
     }
     val lower = if (light) {
-        Color(0xFFE9E3FF).copy(alpha = 0.48f)
+        Color(0xFFE4E9FF).copy(alpha = 0.50f)
     } else {
-        Color(0xFF10142E).copy(alpha = 0.48f)
+        Color(0xFF10172F).copy(alpha = 0.54f)
     }
-    val edge = Color.White.copy(alpha = if (light) 0.82f else 0.34f)
-    val edgeTint = Palette.Lavender.copy(alpha = if (light) 0.32f else 0.26f)
+    val edge = Color.White.copy(alpha = if (light) 0.90f else 0.48f)
+    val edgeTint = Palette.Sky.copy(alpha = if (light) 0.28f else 0.30f)
     return shadow(
-        elevation = 18.dp,
+        elevation = 22.dp,
         shape = shape,
-        ambientColor = Color.Black.copy(alpha = 0.22f),
-        spotColor = Color.Black.copy(alpha = 0.22f),
+        ambientColor = Palette.Lavender.copy(alpha = 0.16f),
+        spotColor = Color.Black.copy(alpha = 0.30f),
     )
         .clip(shape)
-        .background(Brush.linearGradient(listOf(upper, lower)))
+        .background(
+            Brush.linearGradient(
+                colors = listOf(upper, Palette.Glass.copy(alpha = 0.90f), lower),
+            ),
+        )
+        .drawBehind {
+            drawRect(
+                Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (light) 0.24f else 0.08f),
+                        Color.Transparent,
+                    ),
+                    center = Offset(size.width * 0.20f, size.height * 0.05f),
+                    radius = size.maxDimension * 0.90f,
+                ),
+            )
+            drawRect(
+                Brush.radialGradient(
+                    colors = listOf(
+                        Palette.Sky.copy(alpha = if (light) 0.12f else 0.08f),
+                        Color.Transparent,
+                    ),
+                    center = Offset(size.width * 0.90f, size.height),
+                    radius = size.maxDimension * 0.80f,
+                ),
+            )
+        }
         .border(1.dp, Brush.linearGradient(listOf(edge, edgeTint, edge)), shape)
 }
 

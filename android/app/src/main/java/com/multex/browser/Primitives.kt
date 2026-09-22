@@ -74,7 +74,7 @@ fun Modifier.press(enabled: Boolean = true, role: Role = Role.Button, onClick: (
     val pressed by interactions.collectIsPressedAsState()
     // Image-role surfaces are full-screen scrims/sheets, so they should not visually shrink.
     val scale by animateFloatAsState(
-        targetValue = if (enabled && pressed && role != Role.Image) 0.965f else 1f,
+        targetValue = if (Motion.level != AnimLevel.OFF && enabled && pressed && role != Role.Image) 0.965f else 1f,
         animationSpec = spring(dampingRatio = 0.62f, stiffness = 700f),
         label = "press-scale",
     )
@@ -315,7 +315,7 @@ fun BoxScope.OverlaySheet(
         val maxSheet = maxHeight * 0.86f
         AnimatedVisibility(
             visibleState = visible,
-            enter = fadeIn(tween(220)) + slideInVertically(tween(300)) { it / 4 },
+            enter = fadeIn(tween(Motion.ms(220))) + slideInVertically(tween(Motion.ms(300))) { it / 4 },
         ) {
             val shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
             Column(

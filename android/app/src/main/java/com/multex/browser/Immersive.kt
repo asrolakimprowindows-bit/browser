@@ -1,4 +1,7 @@
 package com.multex.browser
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.drawBehind
 
 /*
  * Fullscreen mode ("immersive") with the orb-absorption transition.
@@ -73,9 +76,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -113,6 +119,7 @@ private data class Particle(
 fun ImmersiveOrb(
     lang: Lang,
     tab: Tab,
+    showAddress: Boolean = true,
     blockTrackers: Boolean,
     canForward: Boolean,
     tabCount: Int,
@@ -156,6 +163,7 @@ fun ImmersiveOrb(
         // Absorption driver: 1 = chrome fully in place, 0 = everything swallowed by the orb.
         val t = remember { Animatable(1f) }
         // Orb -> menu driver: 0 = just the orb, 1 = menu fully unfolded.
+        // The orb's own idle bob/lasers below read Motion as well, so OFF freezes them.
         val menuT = remember { Animatable(0f) }
         // One-shot ripple ring fired when the orb finishes materializing.
         val ring = remember { Animatable(1f) }
@@ -168,13 +176,24 @@ fun ImmersiveOrb(
         var dockCenter by remember { mutableStateOf<Offset?>(null) }
         val itemCenters = remember { arrayOfNulls<Offset>(6) }
 
+        // The global animation dial scales every motion in the orb. OFF still snaps the
+        // chrome out of the way instantly (1ms) so fullscreen keeps working — just silently.
+        val m = Motion.level
+        fun d(base: Int): Int = when (m) {
+            AnimLevel.OFF -> 1
+            AnimLevel.DEFAULT -> base
+            AnimLevel.FULL -> (base * 1.6f).toInt()
+        }
+        val orbDetail = if (m == AnimLevel.OFF) OrbDetail.POWERSAVE else if (m == AnimLevel.FULL) OrbDetail.MAX else detail
+        val particlesOn = m != AnimLevel.OFF
+
         // Performance scaling: particles count per detail mode.
-        val particleCount = when (detail) {
-            OrbDetail.POWERSAVE -> 6
+        val particleCount = when (orbDetail) {
+            OrbDetail.POWERSAVE -> if (particlesOn) 6 else 0
             OrbDetail.BALANCE -> 14
             OrbDetail.MAX -> 26
         }
-        val particles = remember(particleCount) {
+        val particles = remember(particleCount, particlesOn) {
             List(particleCount) { i ->
                 val frac = i.toFloat() / particleCount
                 Particle(
@@ -195,21 +214,21 @@ fun ImmersiveOrb(
                     menuT.snapTo(0f)
                     laserT.snapTo(0f)
                     // Accelerate INTO the orb, like gravity pulling the chrome in.
-                    t.animateTo(0f, tween(560, easing = FastOutLinearInEasing))
+                    t.animateTo(0f, tween(d(560), easing = FastOutLinearInEasing))
                     ring.snapTo(0f)
-                    launch { ring.animateTo(1f, tween(650, easing = FastOutSlowInEasing)) }
+                    launch { ring.animateTo(1f, tween(d(650), easing = FastOutSlowInEasing)) }
                     onAbsorbed()
                 }
-                FsState.MENU_OPEN -> menuT.animateTo(1f, tween(360, easing = FastOutSlowInEasing))
-                FsState.ORB -> menuT.animateTo(0f, tween(280))
+                FsState.MENU_OPEN -> menuT.animateTo(1f, tween(d(360), easing = FastOutSlowInEasing))
+                FsState.ORB -> menuT.animateTo(0f, tween(d(280)))
                 FsState.EXITING -> {
                     menuT.snapTo(0f)
                     // Phase 1: the orb "charges" briefly, then fires lasers at each chrome element.
                     // `t` stays 0 during the laser run so the ghosts are not drawn mid-flight;
                     // each element materializes only after its beam lands (see laserStage below).
-                    laserT.animateTo(1f, tween(720, easing = FastOutSlowInEasing))
+                    laserT.animateTo(1f, tween(d(720), easing = FastOutSlowInEasing))
                     // Phase 2: settle: chrome fades from materialized (0.65) to fully in place (1).
-                    t.animateTo(1f, tween(300, easing = LinearOutSlowInEasing))
+                    t.animateTo(1f, tween(d(300), easing = LinearOutSlowInEasing))
                     onRestored()
                 }
                 FsState.NORMAL -> Unit
@@ -253,7 +272,7 @@ fun ImmersiveOrb(
         // ---------- Ghost chrome being absorbed / released ----------
         // Exact visual copies of the real AddressBar / BottomDock (clicks disabled; the real
         // bars are already gone). They start exactly where the real bars were on screen.
-        if (t.value > 0.01f) {
+        if (t.value > 0.01f && showAddress) {
             Column(Modifier.fillMaxWidth().onGloballyPositioned { addressCenter = it.boundsInRoot().center }) {
                 Box(Modifier.fillMaxWidth().then(absorbed(addressCenter, clockwise = false))) {
                     AddressBar(
@@ -372,7 +391,7 @@ fun ImmersiveOrb(
             val addrMat = if (lp < 1f) addrP else 0f
             val dockMat = if (lp < 1f) dockP else 0f
 
-            if (addrMat > 0.01f && addressCenter != null) {
+            if (showAddress && addrMat > 0.01f && addressCenter != null) {
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -445,111 +464,109 @@ fun ImmersiveOrb(
             )
         }
 
-        // ---------- Orb menu: controls fly out of the orb, staggered ----------
+        // ---------- Orb menu: controls orbit around the orb; address floats above ----------
         if (menuT.value > 0.01f) {
-            // Per-item progress: small stagger, and the reverse plays naturally on close.
-            fun itemFly(i: Int): Modifier = Modifier.graphicsLayer {
-                val p = (menuT.value * 1.9f - i * 0.15f).coerceIn(0f, 1f)
-                val c = itemCenters[i]
-                if (c != null) {
-                    translationX = (x.value + orbPx / 2f - c.x) * (1f - p)
-                    translationY = (y.value + orbPx / 2f - c.y) * (1f - p)
-                }
-                val s = 0.3f + 0.7f * p
-                scaleX = s
-                scaleY = s
-                alpha = p
-            }
+            val menuRadius = with(density) { 78.dp.toPx() }
+            fun menuProgress(delay: Float): Float =
+                ((menuT.value - delay) / (1f - delay)).coerceIn(0f, 1f)
 
-            val panelOffsetY = (y.value + orbPx / 2f - panelHPx / 2f)
-                .coerceIn(marginPx, (maxH - panelHPx - marginPx).coerceAtLeast(marginPx))
-            Row(
-                Modifier
-                    .offset { IntOffset(0, panelOffsetY.roundToInt()) }
-                    .fillMaxWidth()
-                    .padding(
-                        start = if (dockedRight) margin else margin + orbSize + gap,
-                        end = if (dockedRight) margin + orbSize + gap else margin,
-                    )
-                    .graphicsLayer { alpha = menuT.value }
-                    .height(panelHeight)
-                    .liquidGlass(999.dp)
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            @Composable
+            fun orbitButton(
+                angleDegrees: Float,
+                index: Int,
+                icon: androidx.compose.ui.graphics.vector.ImageVector,
+                description: String,
+                tint: Color = Palette.Ink,
+                onClick: () -> Unit,
+                enabled: Boolean = true,
             ) {
-                // 0: back, 1: forward, 2: address bar, 3: reload/stop, 4: tabs, 5: exit fullscreen.
-                Box(Modifier.onGloballyPositioned { itemCenters[0] = it.boundsInRoot().center }) {
-                    RoundIconButton(
-                        Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                        contentDescription = tx(lang, "Back", "Kembali"),
-                        onClick = { onMenuOpenChange(false); onBack() },
-                        modifier = itemFly(0),
-                        size = btnSize,
-                        iconSize = 22.dp,
-                        tint = Palette.Ink,
-                    )
-                }
-                Box(Modifier.onGloballyPositioned { itemCenters[1] = it.boundsInRoot().center }) {
-                    RoundIconButton(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = tx(lang, "Forward", "Maju"),
-                        onClick = { onMenuOpenChange(false); onForward() },
-                        modifier = itemFly(1),
-                        size = btnSize,
-                        iconSize = 22.dp,
-                        tint = if (canForward) Palette.Ink else Palette.Ink.copy(alpha = 0.3f),
-                        enabled = canForward,
-                    )
-                }
+                val p = menuProgress(index * 0.08f)
+                val angle = Math.toRadians(angleDegrees.toDouble())
+                val centerX = x.value + orbPx / 2f
+                val centerY = y.value + orbPx / 2f
+                val bx = centerX + cos(angle).toFloat() * menuRadius - with(density) { btnSize.toPx() } / 2f
+                val by = centerY + sin(angle).toFloat() * menuRadius - with(density) { btnSize.toPx() } / 2f
                 Box(
                     Modifier
-                        .weight(1f)
-                        .onGloballyPositioned { itemCenters[2] = it.boundsInRoot().center },
-                ) {
-                    Box(itemFly(2)) {
-                        OrbAddress(lang = lang, tab = tab, onSubmit = {
-                            onMenuOpenChange(false)
-                            onSubmit(it)
-                        })
-                    }
-                }
-                Box(Modifier.onGloballyPositioned { itemCenters[3] = it.boundsInRoot().center }) {
-                    val loading = tab.progress < 100
-                    RoundIconButton(
-                        if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                        contentDescription = if (loading) tx(lang, "Stop", "Berhenti") else tx(lang, "Reload", "Muat ulang"),
-                        onClick = onReloadOrStop,
-                        modifier = itemFly(3),
-                        size = btnSize,
-                        iconSize = 18.dp,
-                        tint = Palette.Ink,
-                    )
-                }
-                Box(Modifier.onGloballyPositioned { itemCenters[4] = it.boundsInRoot().center }) {
-                    Box(
-                        itemFly(4).size(btnSize).clip(CircleShape).press { onMenuOpenChange(false); onTabs() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(
-                            Modifier.size(20.dp).border(2.dp, Palette.Ink, RoundedCornerShape(6.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text("$tabCount", color = Palette.Ink, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        .offset { IntOffset(bx.roundToInt(), by.roundToInt()) }
+                        .graphicsLayer {
+                            alpha = p
+                            val scale = 0.35f + 0.65f * p
+                            scaleX = scale
+                            scaleY = scale
                         }
+                        .size(btnSize)
+                        .liquidGlass(CircleShape)
+                        .press(enabled = enabled, onClick = {
+                            onMenuOpenChange(false)
+                            onClick()
+                        }),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(21.dp))
+                }
+            }
+
+            orbitButton(
+                angleDegrees = 210f,
+                index = 0,
+                icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                description = tx(lang, "Back", "Kembali"),
+                onClick = onBack,
+            )
+            orbitButton(
+                angleDegrees = 275f,
+                index = 1,
+                icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                description = tx(lang, "Forward", "Maju"),
+                tint = if (canForward) Palette.Ink else Palette.Ink.copy(alpha = 0.3f),
+                onClick = onForward,
+                enabled = canForward,
+            )
+            orbitButton(
+                angleDegrees = 345f,
+                index = 2,
+                icon = if (tab.progress < 100) Icons.Filled.Close else Icons.Filled.Refresh,
+                description = if (tab.progress < 100) tx(lang, "Stop", "Berhenti") else tx(lang, "Reload", "Muat ulang"),
+                onClick = onReloadOrStop,
+            )
+            orbitButton(
+                angleDegrees = 55f,
+                index = 3,
+                icon = Icons.Filled.FullscreenExit,
+                description = tx(lang, "Exit fullscreen", "Keluar layar penuh"),
+                tint = Palette.Pink,
+                onClick = onExit,
+            )
+            orbitButton(
+                angleDegrees = 125f,
+                index = 4,
+                icon = Icons.Filled.AutoAwesome,
+                description = tx(lang, "Tabs", "Tab"),
+                onClick = onTabs,
+            )
+
+            val addressWidth = 236.dp
+            if (showAddress) Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 22.dp, end = 20.dp)
+                    .width(addressWidth)
+                    .height(46.dp)
+                    .graphicsLayer {
+                        alpha = menuProgress(0f)
+                        val p = menuProgress(0f)
+                        translationY = (1f - p) * -28f
+                        scaleX = 0.88f + 0.12f * p
+                        scaleY = 0.88f + 0.12f * p
                     }
-                }
-                Box(Modifier.onGloballyPositioned { itemCenters[5] = it.boundsInRoot().center }) {
-                    RoundIconButton(
-                        Icons.Filled.FullscreenExit,
-                        contentDescription = tx(lang, "Exit fullscreen", "Keluar layar penuh"),
-                        onClick = onExit,
-                        modifier = itemFly(5),
-                        size = btnSize,
-                        iconSize = 20.dp,
-                        tint = Palette.Pink,
-                    )
-                }
+                    .liquidGlass(999.dp)
+                    .padding(horizontal = 4.dp, vertical = 3.dp),
+            ) {
+                OrbAddress(lang = lang, tab = tab, onSubmit = {
+                    onMenuOpenChange(false)
+                    onSubmit(it)
+                })
             }
         }
 
@@ -576,8 +593,30 @@ fun ImmersiveOrb(
                     scaleX = orbScale
                     scaleY = orbScale
                 }
-                .accent(CircleShape)
-                .border(1.5.dp, Color.White.copy(alpha = 0.55f), CircleShape)
+                .drawBehind {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            listOf(
+                                Palette.Sky.copy(alpha = 0.52f),
+                                Palette.Lavender.copy(alpha = 0.25f),
+                                Color.Transparent,
+                            ),
+                        ),
+                        radius = size.maxDimension * 0.92f,
+                    )
+                }
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        listOf(
+                            Color(0xFF070914),
+                            Color(0xFF111A36),
+                            Palette.Lavender.copy(alpha = 0.68f),
+                        ),
+                    ),
+                    CircleShape,
+                )
+                .border(1.5.dp, Color.White.copy(alpha = 0.62f), CircleShape)
                 .pointerInput(fs) {
                     detectTapGestures(
                         onTap = {
@@ -621,13 +660,80 @@ fun ImmersiveOrb(
                 },
             contentAlignment = Alignment.Center,
         ) {
+            OrbCoreVisual(
+                active = fs == FsState.ORB || fs == FsState.MENU_OPEN,
+                detail = orbDetail,
+                intensity = laserT.value,
+            )
             Icon(
                 Icons.Filled.AutoAwesome,
                 contentDescription = tx(lang, "Fullscreen controls. Long-press to exit.", "Kontrol layar penuh. Tahan untuk keluar."),
-                tint = Palette.OnAccent,
-                modifier = Modifier.size(24.dp),
+                tint = Color.White.copy(alpha = 0.95f),
+                modifier = Modifier.size(18.dp),
             )
         }
+    }
+}
+
+/** Animated black-hole core used by the fullscreen orb. */
+@Composable
+private fun OrbCoreVisual(active: Boolean, detail: OrbDetail, intensity: Float) {
+    val rotation = rememberInfiniteTransition(label = "orb-rings").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            tween(if (detail == OrbDetail.MAX) 2200 else 3200, easing = LinearOutSlowInEasing),
+            RepeatMode.Restart,
+        ),
+        label = "rotation",
+    )
+    Canvas(Modifier.fillMaxSize()) {
+        val c = center
+        val r = size.minDimension * 0.44f
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(Color.Black, Color(0xFF081020), Palette.Lavender.copy(alpha = 0.36f), Color.Transparent),
+                radius = size.minDimension * 0.50f,
+            ),
+            center = c,
+            radius = r,
+        )
+        val ringAlpha = if (active) 0.72f else 0.45f
+        drawArc(
+            color = Palette.Sky.copy(alpha = ringAlpha),
+            startAngle = rotation.value,
+            sweepAngle = 210f,
+            useCenter = false,
+            style = Stroke(width = 2.6f, cap = StrokeCap.Round),
+        )
+        drawArc(
+            color = Palette.Pink.copy(alpha = ringAlpha * 0.85f),
+            startAngle = rotation.value + 145f,
+            sweepAngle = 165f,
+            useCenter = false,
+            style = Stroke(width = 1.9f, cap = StrokeCap.Round),
+        )
+        drawArc(
+            color = Color.White.copy(alpha = 0.48f + intensity * 0.35f),
+            startAngle = rotation.value * -1f,
+            sweepAngle = 85f,
+            useCenter = false,
+            style = Stroke(width = 1.2f, cap = StrokeCap.Round),
+        )
+        if (detail != OrbDetail.POWERSAVE) {
+            repeat(if (detail == OrbDetail.MAX) 8 else 4) { i ->
+                val a = Math.toRadians((rotation.value + i * 45f).toDouble())
+                val px = c.x + cos(a).toFloat() * r * 0.82f
+                val py = c.y + sin(a).toFloat() * r * 0.82f
+                drawCircle(
+                    color = if (i % 2 == 0) Palette.Sky else Palette.Pink,
+                    radius = 1.4f + intensity * 2.2f,
+                    center = Offset(px, py),
+                    alpha = 0.48f + intensity * 0.42f,
+                )
+            }
+        }
+        drawCircle(Color.White.copy(alpha = 0.78f), radius = 2.2f + intensity * 2.2f, center = c)
     }
 }
 
@@ -648,6 +754,7 @@ private fun OrbAddress(lang: Lang, tab: Tab, onSubmit: (String) -> Unit) {
             .fillMaxWidth()
             .height(40.dp)
             .clip(CircleShape)
+            .background(Palette.Ink.copy(alpha = 0.035f))
             .press(enabled = !editing) {
                 field = TextFieldValue(tab.url, TextRange(0, tab.url.length))
                 editing = true

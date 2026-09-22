@@ -1,5 +1,10 @@
 package com.multex.browser
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.tween
+
 /*
  * Ports of the Tabs / Sessions / Menu sheets from components/browser/overlays.tsx.
  * They are drawn by OverlaySheet (Primitives.kt): dim scrim + glass-strong bottom sheet.
@@ -36,6 +41,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fullscreen
@@ -44,6 +50,16 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Pageview
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PictureInPictureAlt
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -87,7 +103,15 @@ fun BoxScope.TabsOverlay(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     pair.forEach { t ->
                         Box(Modifier.weight(1f)) {
-                            TabCard(t, active = t.id == activeId, lang = lang, onSelect = { onSelect(t.id) }, onClose = { onCloseTab(t.id) })
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = true,
+                                enter = fadeIn(tween(Motion.ms(180))) + slideInVertically(
+                                    tween(Motion.ms(240)),
+                                    initialOffsetY = { it / 4 },
+                                ),
+                            ) {
+                                TabCard(t, active = t.id == activeId, lang = lang, onSelect = { onSelect(t.id) }, onClose = { onCloseTab(t.id) })
+                            }
                         }
                     }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -104,8 +128,8 @@ private fun TabCard(tab: Tab, active: Boolean, lang: Lang, onSelect: () -> Unit,
     Box(
         Modifier
             .fillMaxWidth()
-            .glass(shape)
-            .then(if (active) Modifier.border(2.dp, Palette.Pink, shape) else Modifier)
+            .liquidGlass(shape)
+            .then(if (active) Modifier.border(2.dp, Palette.Pink.copy(alpha = 0.85f), shape) else Modifier)
             .press(onClick = onSelect),
     ) {
         Column {
@@ -206,14 +230,19 @@ fun BoxScope.SessionsOverlay(
                 )
             }
             sessions.forEach { s ->
-                SessionCard(
-                    s,
-                    lang,
-                    active = s.id == activeId,
-                    onOpen = { onOpen(s) },
-                    onRename = { onRename(s.id) },
-                    onDelete = { onDelete(s.id) },
-                )
+                AnimatedVisibility(
+                    visible = true,
+                    enter = fadeIn(tween(Motion.ms(180))),
+                ) {
+                    SessionCard(
+                        s,
+                        lang,
+                        active = s.id == activeId,
+                        onOpen = { onOpen(s) },
+                        onRename = { onRename(s.id) },
+                        onDelete = { onDelete(s.id) },
+                    )
+                }
             }
         }
     }
@@ -228,7 +257,7 @@ private fun SessionCard(
     onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().glass(16.dp).padding(16.dp)) {
+    Column(Modifier.fillMaxWidth().liquidGlass(16.dp).padding(16.dp)) {
         Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 Text(s.name, color = Palette.Ink, fontFamily = Fonts.Display, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -332,13 +361,24 @@ fun BoxScope.MenuOverlay(
     lang: Lang,
     companionEnabled: Boolean,
     immersive: Boolean,
+    desktopSite: Boolean,
     onChat: () -> Unit,
     onSessions: () -> Unit,
     onSaveSession: () -> Unit,
     onDirect: () -> Unit,
     onToggleCompanion: () -> Unit,
     onToggleImmersive: () -> Unit,
+    onToggleDesktop: () -> Unit,
     onSettings: () -> Unit,
+    onHistory: () -> Unit,
+    onDownloads: () -> Unit,
+    onExtensions: () -> Unit,
+    onSiteSettings: () -> Unit,
+    onProfile: () -> Unit,
+    onFindInPage: () -> Unit,
+    onTranslate: () -> Unit,
+    onPip: () -> Unit,
+    onIncognito: () -> Unit,
     onClose: () -> Unit,
 ) {
     val items = listOf(
@@ -347,6 +387,12 @@ fun BoxScope.MenuOverlay(
             if (immersive) tx(lang, "Exit fullscreen", "Keluar layar penuh") else tx(lang, "Fullscreen mode", "Mode layar penuh"),
             tx(lang, "Fold the bars into a floating orb", "Lipat semua bar jadi satu bola melayang"),
             onToggleImmersive,
+        ),
+        MenuItem(
+            if (desktopSite) Icons.Filled.PhoneAndroid else Icons.Filled.Computer,
+            if (desktopSite) tx(lang, "Mobile site", "Situs mobile") else tx(lang, "Desktop site", "Situs desktop"),
+            if (desktopSite) tx(lang, "Use the mobile version of sites", "Pakai versi mobile situs") else tx(lang, "Request desktop layouts from sites", "Minta tampilan desktop dari situs"),
+            onToggleDesktop,
         ),
         MenuItem(Icons.Filled.ChatBubble, tx(lang, "Talk to Denia", "Ngobrol sama Denia"), tx(lang, "Ask anything or give a command", "Tanya apa aja atau kasih perintah"), onChat),
         MenuItem(Icons.Filled.Layers, tx(lang, "Sessions", "Sesi"), tx(lang, "Separate tabs and cookies", "Tab dan cookie terpisah"), onSessions),
@@ -358,30 +404,44 @@ fun BoxScope.MenuOverlay(
             tx(lang, "Toggle the companion", "Nyalakan / matikan Denia"),
             onToggleCompanion,
         ),
+        MenuItem(Icons.Filled.VisibilityOff, tx(lang, "Incognito tab", "Tab penyamaran"), tx(lang, "Nothing is written to history", "Tidak ada yang dicatat di riwayat"), onIncognito),
+        MenuItem(Icons.Filled.History, tx(lang, "History", "Riwayat"), tx(lang, "Recently visited pages", "Halaman yang baru dikunjungi"), onHistory),
+        MenuItem(Icons.Filled.Download, tx(lang, "Downloads", "Unduhan"), tx(lang, "Files grabbed by the browser", "File yang diunduh browser"), onDownloads),
+        MenuItem(Icons.Filled.Pageview, tx(lang, "Find in page", "Cari di halaman"), tx(lang, "Locate words on this page", "Cari kata di halaman ini"), onFindInPage),
+        MenuItem(Icons.Filled.Translate, tx(lang, "Translate page", "Terjemahkan halaman"), tx(lang, "Through Google Translate", "Lewat Google Translate"), onTranslate),
+        MenuItem(Icons.Filled.PictureInPictureAlt, tx(lang, "Picture in picture", "Picture in picture"), tx(lang, "Float the video over other apps", "Video melayang di atas aplikasi lain"), onPip),
+        MenuItem(Icons.Filled.Extension, tx(lang, "Extensions", "Ekstensi"), tx(lang, "Userscripts like Firefox add-ons", "Userscript mirip add-on Firefox"), onExtensions),
+        MenuItem(Icons.Filled.Tune, tx(lang, "Site settings", "Pengaturan situs"), tx(lang, "Mic, camera & location per site", "Mic, kamera & lokasi per situs"), onSiteSettings),
+        MenuItem(Icons.Filled.AccountCircle, tx(lang, "Profile", "Profil"), tx(lang, "Name, avatar & stats", "Nama, avatar & statistik"), onProfile),
         MenuItem(LucideSettings2, tx(lang, "Settings", "Pengaturan"), tx(lang, "Theme, search, privacy", "Tema, pencarian, privasi"), onSettings),
     )
     OverlaySheet(title = tx(lang, "Menu", "Menu"), onClose = onClose) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items.forEach { item ->
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            items.forEachIndexed { index, item ->
+                AnimatedVisibility(
+                    visible = true,
+                    enter = fadeIn(tween(Motion.ms(180), delayMillis = index * 18)),
+                ) {
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
                         .press(onClick = item.onClick)
-                        .padding(12.dp),
+                        .padding(horizontal = 9.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Box(
-                        Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(Palette.Lavender.copy(alpha = 0.2f)),
+                        Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(Palette.Lavender.copy(alpha = 0.2f)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(item.icon, contentDescription = null, tint = Palette.Lavender, modifier = Modifier.size(20.dp))
+                        Icon(item.icon, contentDescription = null, tint = Palette.Lavender, modifier = Modifier.size(18.dp))
                     }
                     Column {
-                        Text(item.label, color = Palette.Ink, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Text(item.hint, color = Palette.InkMuted, fontSize = 12.sp)
+                        Text(item.label, color = Palette.Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(item.hint, color = Palette.InkMuted, fontSize = 11.sp)
                     }
+                }
                 }
             }
         }

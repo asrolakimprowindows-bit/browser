@@ -2,18 +2,38 @@ package com.multex.browser
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.ViewGroup
+import java.io.File
+import java.io.FileOutputStream
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationCompat
+import java.net.URLEncoder
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -95,6 +115,30 @@ class BrowserModel(private val activity: Activity) {
     private val store = SettingsStore(activity)
     private val handler = Handler(Looper.getMainLooper())
 
+    private val historyStore = HistoryStore(activity)
+    private val downloadStore = DownloadLogStore(activity)
+    val extensionStore = ExtensionStore(activity)
+    val sitePrefs = SitePrefsStore(activity)
+
+    /** "Open in app?" prompt: url to app label. Non-null while the dialog is up. */
+    var appLinkPrompt by mutableStateOf<Pair<String, String>?>(null)
+        private set
+    /** Pending WebView permission request (mic/camera/...) awaiting the user's answer. */
+    var permissionPrompt by mutableStateOf<PendingPerm?>(null)
+        private set
+    /** Pending geolocation prompt: origin to callback. */
+    var geoPrompt by mutableStateOf<Pair<String, GeolocationPermissions.Callback>?>(null)
+        private set
+    var findBarOpen by mutableStateOf(false)
+        private set
+    var findInfo by mutableStateOf("")
+        private set
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var fileLauncher: androidx.activity.result.ActivityResultLauncher<Intent>? = null
+    private var profileImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
+    /** URLs the user chose to keep in the browser (skip the app prompt for these). */
+    private val appLinkAllowed = HashSet<String>()
+
     var settings by mutableStateOf(store.load())
         private set
 
@@ -143,6 +187,17 @@ class BrowserModel(private val activity: Activity) {
 
     init {
         restore()
+        Motion.level = settings.animLevel
+        (activity as? ComponentActivity)?.let { act ->
+            fileLauncher = act.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+                val cb = filePathCallback ?: return@registerForActivityResult
+                filePathCallback = null
+                cb.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res.resultCode, res.data))
+            }
+            profileImageLauncher = act.registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+                if (uri != null) saveProfileAvatar(uri)
+            }
+        }
     }
 
     // ------------------------------------------------------------------ Denia cues
@@ -157,13 +212,58 @@ class BrowserModel(private val activity: Activity) {
     fun updateSettings(transform: (Settings) -> Settings) {
         val old = settings
         val next = transform(old)
+        if (old.profileImagePath.isNotBlank() && old.profileImagePath != next.profileImagePath && next.profileImagePath.isBlank()) {
+            runCatching { File(old.profileImagePath).delete() }
+        }
         settings = next
         store.save(next)
+        Motion.level = next.animLevel
+        if (next.textZoom != old.textZoom) {
+            webViews.values.forEach { it.settings.textZoom = next.textZoom }
+        }
         if (next.desktopSite != old.desktopSite) {
             webViews.values.forEach { wv ->
                 applyUa(wv)
                 wv.reload()
             }
+        }
+    }
+
+    /** Opens the system image picker for the profile avatar. */
+    fun chooseProfileImage() {
+        profileImageLauncher?.launch("image/*")
+    }
+
+    /** Removes the stored profile avatar and returns to the emoji avatar. */
+    fun removeProfileImage() {
+        val old = settings.profileImagePath
+        if (old.isNotBlank()) runCatching { File(old).delete() }
+        updateSettings { it.copy(profileImagePath = "") }
+    }
+
+    /** Center-crops the selected image into a small private square avatar file. */
+    private fun saveProfileAvatar(uri: Uri) {
+        val decoded = runCatching {
+            activity.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        }.getOrNull() ?: return
+
+        val side = minOf(decoded.width, decoded.height)
+        val left = (decoded.width - side) / 2
+        val top = (decoded.height - side) / 2
+        val cropped = Bitmap.createBitmap(decoded, left, top, side, side)
+        if (cropped != decoded) decoded.recycle()
+
+        val target = File(activity.filesDir, "profile_avatar.jpg")
+        runCatching {
+            FileOutputStream(target).use { out ->
+                cropped.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            }
+            cropped.recycle()
+            val old = settings.profileImagePath
+            if (old.isNotBlank() && old != target.absolutePath) runCatching { File(old).delete() }
+            updateSettings { it.copy(profileImagePath = target.absolutePath) }
+        }.onFailure {
+            if (!cropped.isRecycled) cropped.recycle()
         }
     }
 
@@ -190,6 +290,7 @@ class BrowserModel(private val activity: Activity) {
     fun select(id: String) {
         activeId = id
         overlay = Overlay.NONE
+        closeFindBar()
     }
 
     fun newTab() {
@@ -208,6 +309,10 @@ class BrowserModel(private val activity: Activity) {
     }
 
     fun closeTab(id: String) {
+        if (tabs.firstOrNull { it.id == id }?.incognito == true) {
+            webViews[id]?.clearCache(true)
+            webViews[id]?.clearHistory()
+        }
         destroyWebView(id)
         tabs.removeAll { it.id == id }
         if (tabs.isEmpty()) {
@@ -242,7 +347,7 @@ class BrowserModel(private val activity: Activity) {
         val url = resolveInput(input, settings.searchEngine, settings.httpsOnly)
         if (url.isEmpty()) return
         val a = active
-        val next = makeTab(url).copy(id = a.id)
+        val next = makeTab(url).copy(id = a.id, incognito = a.incognito)
         updateTab(a.id) { next }
         webViews[a.id]?.loadUrl(url)
         overlay = Overlay.NONE
@@ -253,7 +358,7 @@ class BrowserModel(private val activity: Activity) {
     fun goHome() {
         val a = active
         destroyWebView(a.id)
-        updateTab(a.id) { makeHomeTab().copy(id = a.id) }
+        updateTab(a.id) { makeHomeTab(a.incognito).copy(id = a.id) }
         nudge(tx(lang, "Back home~", "Kembali ke beranda~"), Mood.NEUTRAL)
         save()
     }
@@ -289,7 +394,7 @@ class BrowserModel(private val activity: Activity) {
         if (i < 0) return
         val s = sessions[i]
         sessions[i] = s.copy(
-            tabs = tabs.map { it.parked() },
+            tabs = tabs.filter { !it.incognito }.map { it.parked() },
             savedAt = if (touch) System.currentTimeMillis() else s.savedAt,
         )
     }
@@ -550,10 +655,206 @@ class BrowserModel(private val activity: Activity) {
             DeniaAction.GO_BACK -> back()
             DeniaAction.OPEN_URL, DeniaAction.NONE -> Unit
         }
+        // "cari X" lands as OPEN_URL with a label; run it as a search in the current tab instead.
+        r.pending?.let { target -> navigate(target.url) }
         if (!settings.companionEnabled && r.action != DeniaAction.SHOW_DENIA) {
             updateSettings { it.copy(companionEnabled = true) }
         }
         nudge(r.text, r.mood, true)
+    }
+
+    // ------------------------------------------------------------------ Feature pack
+
+    fun newIncognitoTab() {
+        val t = makeHomeTab(true)
+        tabs.add(t)
+        activeId = t.id
+        overlay = Overlay.NONE
+        nudge(tx(lang, "Incognito tab! Nothing here is written to history~", "Tab penyamaran! Semua di sini bebas dari riwayat~"), Mood.HAPPY, true)
+    }
+
+    fun history(): List<HistoryEntry> = historyStore.all().asReversed()
+    fun clearHistory() {
+        historyStore.clear()
+        nudge(tx(lang, "History wiped clean~", "Riwayat sudah bersih~"), Mood.HAPPY, true)
+    }
+    fun removeHistoryEntry(e: HistoryEntry) = historyStore.remove(e)
+
+    val historyRevision: Int get() = historyStore.revision
+    val downloadRevision: Int get() = downloadStore.revision
+
+    fun downloads(): List<DownloadEntry> = downloadStore.all()
+    fun removeDownload(id: String) = downloadStore.remove(id)
+    fun clearDownloads() = downloadStore.clear()
+
+    fun openFindBar() {
+        if (active.kind != TabKind.PAGE) return
+        findBarOpen = true
+        findInfo = ""
+        overlay = Overlay.NONE
+    }
+
+    fun closeFindBar() {
+        if (!findBarOpen) return
+        findBarOpen = false
+        webViews[active.id]?.clearMatches()
+    }
+
+    fun findInPage(q: String) {
+        if (q.isBlank()) {
+            webViews[active.id]?.clearMatches()
+            findInfo = ""
+        } else {
+            webViews[active.id]?.findAllAsync(q)
+        }
+    }
+
+    fun findNext(forward: Boolean) {
+        webViews[active.id]?.findNext(forward)
+    }
+
+    /** Wraps the current page in Google Translate (sl=auto, tl = app language). */
+    fun translatePage() {
+        val wv = webViews[active.id] ?: return
+        val url = active.url
+        if (!url.startsWith("http")) return
+        overlay = Overlay.NONE
+        wv.loadUrl(
+            "https://translate.google.com/translate?sl=auto&tl=${settings.language.id}&u=" +
+                URLEncoder.encode(url, "UTF-8"),
+        )
+        nudge(tx(lang, "Translating this page~", "Lagi diterjemahin~"), Mood.HAPPY, true)
+    }
+
+    /** Puts the whole activity into Picture-in-Picture (for videos). */
+    fun enterPip() {
+        overlay = Overlay.NONE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && active.kind == TabKind.PAGE) {
+            runCatching {
+                activity.enterPictureInPictureMode(
+                    PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build(),
+                )
+            }
+        }
+    }
+
+    fun resolveAppLink(openApp: Boolean) {
+        val p = appLinkPrompt ?: return
+        appLinkPrompt = null
+        if (openApp) {
+            runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.first))) }
+        } else {
+            appLinkAllowed.add(p.first)
+            webViews[active.id]?.loadUrl(p.first)
+        }
+    }
+
+    fun answerPermission(grant: Boolean) {
+        val p = permissionPrompt ?: return
+        permissionPrompt = null
+        if (grant) p.request.grant(p.request.resources) else p.request.deny()
+        var rule = sitePrefs.ruleFor(p.host)
+        p.resources.forEach { r ->
+            when (r) {
+                PermissionRequest.RESOURCE_AUDIO_CAPTURE ->
+                    rule = rule.copy(mic = if (grant) Perm.ALLOW else Perm.DENY)
+                PermissionRequest.RESOURCE_VIDEO_CAPTURE ->
+                    rule = rule.copy(cam = if (grant) Perm.ALLOW else Perm.DENY)
+            }
+        }
+        sitePrefs.set(p.host, rule)
+    }
+
+    fun answerGeo(allow: Boolean) {
+        val g = geoPrompt ?: return
+        geoPrompt = null
+        g.second.invoke(g.first, allow, false)
+        val host = hostOf(g.first)
+        sitePrefs.set(host, sitePrefs.ruleFor(host).copy(loc = if (allow) Perm.ALLOW else Perm.DENY))
+    }
+
+    /** Denia command "cari X" / "search for X" runs as a search in the current tab. */
+    fun searchWithDenia(query: String) {
+        navigate(query)
+        chatOpen = false
+        nudge(tx(lang, "Searching for $query~", "Nyari $query~"), Mood.HAPPY, true)
+    }
+
+    // ------------------------------------------------------------------ Downloads
+
+    fun startDownload(url: String, contentDisposition: String?, mime: String?) {
+        val name = URLUtil.guessFileName(url, contentDisposition, mime)
+        if (settings.downloadMode == DownloadMode.EXTERNAL && tryExternalDownloader(url, name)) {
+            return
+        }
+        runCatching {
+            val dm = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val req = DownloadManager.Request(Uri.parse(url))
+            if (mime != null) req.setMimeType(mime)
+            CookieManager.getInstance().getCookie(url)?.let { req.addRequestHeader("Cookie", it) }
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            dm.enqueue(req)
+            downloadStore.add(DownloadEntry(uid(), name, url, mime ?: "", System.currentTimeMillis(), "queued"))
+            nudge(tx(lang, "Downloading $name~", "Mengunduh $name~"), Mood.HAPPY, true)
+        }.onFailure {
+            nudge(tx(lang, "Couldn't start that download...", "Unduhannya gagal mulai..."), Mood.POUT, true)
+        }
+    }
+
+    /** Hands the file to an installed external downloader (1DM, ADM), falling back to a generic VIEW. */
+    private fun tryExternalDownloader(url: String, name: String): Boolean {
+        val pm = activity.packageManager
+        val packages = listOf(
+            "idm.internet.download.manager",
+            "idm.internet.download.manager.plus",
+            "idm.internet.download.manager.adm.lite",
+            "com.dv.adm",
+        )
+        for (pkg in packages) {
+            if (runCatching { pm.getPackageInfo(pkg, 0) }.isSuccess) {
+                val ok = runCatching {
+                    activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(pkg))
+                }.isSuccess
+                if (ok) {
+                    downloadStore.add(DownloadEntry(uid(), name, url, "", System.currentTimeMillis(), "external"))
+                    notifyExternalDownload(name)
+                    nudge(tx(lang, "Sent to the external downloader~", "Dikirim ke downloader eksternal~"), Mood.HAPPY, true)
+                    return true
+                }
+            }
+        }
+        // No dedicated downloader found: let Android resolve anything that wants the file.
+        val ok = runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }.isSuccess
+        if (ok) {
+            downloadStore.add(DownloadEntry(uid(), name, url, "", System.currentTimeMillis(), "external"))
+            notifyExternalDownload(name)
+        }
+        return ok
+    }
+
+    private fun notifyExternalDownload(name: String) {
+        if (!settings.notifications) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val nm = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(
+                NotificationChannel(NOTIF_CHANNEL, "Downloads", NotificationManager.IMPORTANCE_DEFAULT),
+            )
+        }
+        nm.notify(
+            (System.currentTimeMillis() % 100000).toInt(),
+            NotificationCompat.Builder(activity, NOTIF_CHANNEL)
+                .setSmallIcon(R.drawable.icon)
+                .setContentTitle(tx(lang, "Sent to external downloader", "Dikirim ke downloader eksternal"))
+                .setContentText(name)
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     // ------------------------------------------------------------------ WebViews
@@ -579,12 +880,22 @@ class BrowserModel(private val activity: Activity) {
         ws.builtInZoomControls = true
         ws.displayZoomControls = false
         ws.mediaPlaybackRequiresUserGesture = true
+        ws.textZoom = settings.textZoom
         if (mobileUa.isEmpty()) {
             // Look like regular Chrome (helps Google sign-in in a WebView; not guaranteed).
             mobileUa = ws.userAgentString.replace("; wv", "").replace("Version/4.0 ", "")
         }
         applyUa(wv)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+
+        wv.setDownloadListener { url, _, contentDisposition, mime, _ ->
+            startDownload(url, contentDisposition, mime)
+        }
+        wv.setFindListener { activeMatch, count, done ->
+            findInfo = if (done) {
+                if (count == 0) "0/0" else "${activeMatch + 1}/$count"
+            } else findInfo
+        }
 
         var lastScrollY = 0
         wv.setOnScrollChangeListener { _, _, y, _, _ ->
@@ -602,6 +913,56 @@ class BrowserModel(private val activity: Activity) {
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 if (!title.isNullOrBlank()) updateTab(tabId) { it.copy(title = title) }
             }
+
+            // Upload: <input type=file> opens the system picker and the result goes back to the page.
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePath: ValueCallback<Array<Uri>>?,
+                params: FileChooserParams?,
+            ): Boolean {
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = filePath
+                val intent = params?.createIntent()
+                    ?: Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                return try {
+                    fileLauncher?.launch(intent)
+                    true
+                } catch (e: Exception) {
+                    filePathCallback = null
+                    false
+                }
+            }
+
+            // Site settings: mic/camera requests follow the saved per-host rule, otherwise ask.
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                val req = request ?: return
+                val host = hostOf(req.origin.toString())
+                val rule = sitePrefs.ruleFor(host)
+                var undecided = false
+                var denied = false
+                req.resources.forEach { r ->
+                    val p = when (r) {
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> rule.mic
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> rule.cam
+                        else -> Perm.ASK
+                    }
+                    if (p == Perm.DENY) denied = true else if (p == Perm.ASK) undecided = true
+                }
+                when {
+                    denied -> req.deny()
+                    undecided -> permissionPrompt = PendingPerm(req, host, req.resources.toList())
+                    else -> req.grant(req.resources)
+                }
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                if (origin == null || callback == null) return
+                when (sitePrefs.ruleFor(hostOf(origin)).loc) {
+                    Perm.ALLOW -> callback.invoke(origin, true, false)
+                    Perm.DENY -> callback.invoke(origin, false, false)
+                    Perm.ASK -> geoPrompt = origin to callback
+                }
+            }
         }
 
         wv.webViewClient = object : WebViewClient() {
@@ -609,7 +970,19 @@ class BrowserModel(private val activity: Activity) {
                 val req = request ?: return false
                 val uri = req.url ?: return false
                 return when (uri.scheme) {
-                    "https", "about", "data", "blob", "javascript", null -> false
+                    "about", "data", "blob", "javascript", null -> false
+                    "https" -> {
+                        val url = uri.toString()
+                        // Offer the native app for well-known sites (YouTube, Discord, ...) when installed.
+                        if (req.isForMainFrame && settings.appLinkPrompt && url !in appLinkAllowed) {
+                            val target = APP_LINK_TARGETS[hostOf(url)]
+                            if (target != null && activity.packageManager.getLaunchIntentForPackage(target.first) != null) {
+                                appLinkPrompt = url to target.second
+                                return true
+                            }
+                        }
+                        false
+                    }
                     "http" -> {
                         if (settings.httpsOnly && req.isForMainFrame) {
                             view?.loadUrl(uri.toString().replaceFirst("http://", "https://"))
@@ -635,6 +1008,10 @@ class BrowserModel(private val activity: Activity) {
                     handler.post { updateTab(tabId) { it.copy(blocked = it.blocked + 1) } }
                     return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
+                if (settings.adBlock && isAdHost(req.url?.host)) {
+                    handler.post { updateTab(tabId) { it.copy(blocked = it.blocked + 1) } }
+                    return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                }
                 return null
             }
 
@@ -656,6 +1033,15 @@ class BrowserModel(private val activity: Activity) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 updateTab(tabId) { it.copy(progress = 100) }
                 sync(view, tabId)
+                if (url != null) {
+                    val tab = tabs.firstOrNull { it.id == tabId }
+                    if (tab != null && !tab.incognito && url.startsWith("http")) {
+                        historyStore.add(url, tab.title.ifBlank { titleFor(hostOf(url)) })
+                    }
+                    extensionStore.enabledFor(hostOf(url)).forEach { script ->
+                        view?.evaluateJavascript(script.code, null)
+                    }
+                }
                 save()
             }
 
@@ -800,3 +1186,8 @@ class BrowserModel(private val activity: Activity) {
         restoreShortcuts()
     }
 }
+
+private const val NOTIF_CHANNEL = "multex.downloads"
+
+/** A WebView permission request paused until the user answers the prompt dialog. */
+data class PendingPerm(val request: PermissionRequest, val host: String, val resources: List<String>)

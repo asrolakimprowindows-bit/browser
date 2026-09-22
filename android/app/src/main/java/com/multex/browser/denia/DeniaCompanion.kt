@@ -24,6 +24,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import com.multex.browser.Motion
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -242,15 +243,15 @@ fun DeniaCompanion(
         fun squashThen(action: () -> Unit) {
             scope.launch {
                 tapRing.snapTo(0f)
-                launch { tapRing.animateTo(1f, tween(520, easing = FastOutSlowInEasing)) }
+                launch { tapRing.animateTo(1f, tween(Motion.ms(520), easing = FastOutSlowInEasing)) }
                 launch {
-                    squash.animateTo(0.72f, tween(110, easing = FastOutSlowInEasing))
-                    squash.animateTo(1.12f, tween(140))
+                    squash.animateTo(0.72f, tween(Motion.ms(110), easing = FastOutSlowInEasing))
+                    squash.animateTo(1.12f, tween(Motion.ms(140)))
                     squash.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 500f))
                 }
                 launch {
-                    stretch.animateTo(1.22f, tween(110, easing = FastOutSlowInEasing))
-                    stretch.animateTo(0.94f, tween(140))
+                    stretch.animateTo(1.22f, tween(Motion.ms(110), easing = FastOutSlowInEasing))
+                    stretch.animateTo(0.94f, tween(Motion.ms(140)))
                     stretch.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 500f))
                 }
                 // Small delay so the squash reads before the panel starts growing out of her.
@@ -267,7 +268,7 @@ fun DeniaCompanion(
             pose = Pose.SIDE
             walking = true
             scope.launch {
-                offset.animateTo(to, tween((dist * 6).toInt().coerceIn(450, 2600), easing = FastOutSlowInEasing))
+                offset.animateTo(to, tween(Motion.ms((dist * 6).toInt().coerceIn(450, 2600)), easing = FastOutSlowInEasing))
                 walking = false
                 pose = Pose.FRONT
                 say(arriveLines(lang).random())
@@ -338,7 +339,7 @@ fun DeniaCompanion(
                 key(m.id) {
                     val progress = remember { Animatable(0f) }
                     LaunchedEffect(Unit) {
-                        progress.animateTo(1f, tween(520))
+                        progress.animateTo(1f, tween(Motion.ms(520)))
                         marker = null
                     }
                     Box(
@@ -362,7 +363,7 @@ fun DeniaCompanion(
             initialValue = 0f,
             targetValue = if (walking) -7f else -6f,
             animationSpec = infiniteRepeatable(
-                tween(if (walking) 190 else 1600, easing = FastOutSlowInEasing),
+                tween(if (walking) Motion.ms(190) else 1600, easing = FastOutSlowInEasing),
                 RepeatMode.Reverse,
             ),
             label = "floatY",
@@ -370,13 +371,13 @@ fun DeniaCompanion(
         val sway by motion.animateFloat(
             initialValue = -1.5f,
             targetValue = 1.5f,
-            animationSpec = infiniteRepeatable(tween(190), RepeatMode.Reverse),
+            animationSpec = infiniteRepeatable(tween(Motion.ms(190)), RepeatMode.Reverse),
             label = "sway",
         )
         val hopY by motion.animateFloat(
             initialValue = 0f,
             targetValue = -9f,
-            animationSpec = infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            animationSpec = infiniteRepeatable(tween(Motion.ms(700), easing = FastOutSlowInEasing), RepeatMode.Reverse),
             label = "hopY",
         )
 

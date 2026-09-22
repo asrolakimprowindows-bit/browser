@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
+import com.multex.browser.Motion
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -118,14 +119,14 @@ fun DeniaChatBar(
 
     LaunchedEffect(Unit) {
         // Enter: quick expand with a small overshoot, then settle.
-        progress.animateTo(1.08f, tween(240, easing = FastOutSlowInEasing))
-        progress.animateTo(1f, tween(160, easing = LinearOutSlowInEasing))
+        progress.animateTo(1.08f, tween(Motion.ms(240), easing = FastOutSlowInEasing))
+        progress.animateTo(1f, tween(Motion.ms(160), easing = LinearOutSlowInEasing))
     }
     LaunchedEffect(closeSignal) {
         if (closeSignal <= 0 || closing) return@LaunchedEffect
         closing = true
         // Exit: content fades, panel collapses back toward Denia.
-        progress.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
+        progress.animateTo(0f, tween(Motion.ms(260), easing = FastOutSlowInEasing))
         onClose()
     }
 
@@ -133,7 +134,7 @@ fun DeniaChatBar(
         if (closing) return
         closing = true
         scope.launch {
-            progress.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
+            progress.animateTo(0f, tween(Motion.ms(260), easing = FastOutSlowInEasing))
             onClose()
         }
     }
